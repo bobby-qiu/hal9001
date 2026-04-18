@@ -14,6 +14,11 @@ struct BasisMeta {
   std::vector<int> orders;
 };
 
+struct SupportMask {
+  std::vector<unsigned char> active;
+  std::vector<double> values;
+};
+
 std::string basis_key(const BasisMeta& basis, int upto = -1) {
   if (upto < 0 || upto > static_cast<int>(basis.cols.size())) {
     upto = static_cast<int>(basis.cols.size());
@@ -155,13 +160,12 @@ double meets_basis(const NumericMatrix& X, const int row_num,
 //' @param basis_col Numeric indicating which column to populate.
 //'
 void evaluate_basis_full(const BasisMeta& basis, const NumericMatrix& X, SpMat& x_basis,
-                         int basis_col, std::vector<int>& rows_out,
-                         std::vector<double>& values_out) {
+                         int basis_col, SupportMask& support) {
   int n = X.rows();
   int p = static_cast<int>(basis.cols.size());
 
-  rows_out.clear();
-  values_out.clear();
+  support.active.assign(n, 0);
+  support.values.assign(n, 0.0);
 
   for (int row_num = 0; row_num < n; row_num++) {
     double value = 1.0;
@@ -184,43 +188,45 @@ void evaluate_basis_full(const BasisMeta& basis, const NumericMatrix& X, SpMat& 
 
     if (keep && value != 0.0) {
       x_basis.insert(row_num, basis_col) = value;
-      rows_out.push_back(row_num);
-      values_out.push_back(value);
+      support.active[row_num] = 1;
+      support.values[row_num] = value;
     }
   }
 }
 
 void evaluate_basis_from_parent(const BasisMeta& basis,
-                                const std::vector<int>& parent_rows,
-                                const std::vector<double>& parent_values,
+                                const SupportMask& parent_support,
                                 const NumericMatrix& X, SpMat& x_basis,
-                                int basis_col, std::vector<int>& rows_out,
-                                std::vector<double>& values_out) {
+                                int basis_col, SupportMask& support) {
+  int n = X.rows();
   int last = static_cast<int>(basis.cols.size()) - 1;
 
-  rows_out.clear();
-  values_out.clear();
+  support.active.assign(n, 0);
+  support.values.assign(n, 0.0);
 
   double cutoff = basis.cutoffs[last];
   int order = basis.orders[last];
 
-  for (size_t j = 0; j < parent_rows.size(); ++j) {
-    int row_num = parent_rows[j];
+  for (int row_num = 0; row_num < n; ++row_num) {
+    if (!parent_support.active[row_num]) {
+      continue;
+    }
+
     double obs = X(row_num, basis.cols[last] - 1);
 
     if (!(obs >= cutoff)) {
       continue;
     }
 
-    double value = parent_values[j];
+    double value = parent_support.values[row_num];
     if (order != 0) {
       value *= std::pow(obs - cutoff, order);
     }
 
     if (value != 0.0) {
       x_basis.insert(row_num, basis_col) = value;
-      rows_out.push_back(row_num);
-      values_out.push_back(value);
+      support.active[row_num] = 1;
+      support.values[row_num] = value;
     }
   }
 }
@@ -289,8 +295,7 @@ SpMat make_design_matrix(const NumericMatrix& X, const List& blist, double p_res
     basis_index[basis_key(basis_meta.back())] = basis_col;
   }
 
-  std::vector< std::vector<int> > support_rows(basis_p);
-  std::vector< std::vector<double> > support_values(basis_p);
+  std::vector<SupportMask> supports(basis_p);
 
   for (int basis_col = 0; basis_col < basis_p; basis_col++) {
     const BasisMeta& meta = basis_meta[basis_col];
@@ -304,13 +309,11 @@ SpMat make_design_matrix(const NumericMatrix& X, const List& blist, double p_res
         int parent_col = parent_it->second;
         evaluate_basis_from_parent(
           meta,
-          support_rows[parent_col],
-          support_values[parent_col],
+          supports[parent_col],
           X,
           x_basis,
           basis_col,
-          support_rows[basis_col],
-          support_values[basis_col]
+          supports[basis_col]
         );
         continue;
       }
@@ -321,8 +324,7 @@ SpMat make_design_matrix(const NumericMatrix& X, const List& blist, double p_res
       X,
       x_basis,
       basis_col,
-      support_rows[basis_col],
-      support_values[basis_col]
+      supports[basis_col]
     );
   }
 
