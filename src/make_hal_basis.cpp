@@ -1,7 +1,14 @@
 // [[Rcpp::depends(RcppEigen)]]
 #include <RcppEigen.h>
+#include <vector>
 #include "hal9001_types.h"
 using namespace Rcpp;
+
+struct BasisMeta {
+  IntegerVector cols;
+  NumericVector cutoffs;
+  IntegerVector orders;
+};
 //------------------------------------------------------------------------------
 
 //------------------------------------------------------------------------------
@@ -120,27 +127,19 @@ double meets_basis(const NumericMatrix& X, const int row_num,
 //' @param x_basis The HAL design matrix, containing indicator functions.
 //' @param basis_col Numeric indicating which column to populate.
 //'
-// [[Rcpp::export]]
-void evaluate_basis(const List& basis, const NumericMatrix& X, SpMat& x_basis,
+void evaluate_basis(const BasisMeta& basis, const NumericMatrix& X, SpMat& x_basis,
                     int basis_col) {
   int n = X.rows();
 
+  const IntegerVector& cols = basis.cols;
+  const NumericVector& cutoffs = basis.cutoffs;
+  const IntegerVector& orders = basis.orders;
 
-  //split basis into x[1] x[-1]
-  //find sub-bases
-  //intersect
-  IntegerVector cols = as<IntegerVector>(basis["cols"]);
-  NumericVector cutoffs = as<NumericVector>(basis["cutoffs"]);
-  IntegerVector orders =  as<IntegerVector>(basis["orders"]);
   for (int row_num = 0; row_num < n; row_num++) {
-    double value = meets_basis(X, row_num, cols, cutoffs,  orders);
+    double value = meets_basis(X, row_num, cols, cutoffs, orders);
     if (value!=0) {
-      //Add value
       x_basis.insert(row_num, basis_col) = value;
     }
-
-
-
   }
 }
 
@@ -189,16 +188,22 @@ SpMat make_design_matrix(const NumericMatrix& X, const List& blist, double p_res
   SpMat x_basis(n, basis_p);
   x_basis.reserve(p_reserve * n * basis_p);
 
-  List basis;
-  NumericVector cutoffs, current_row;
-  IntegerVector last_cols, cols;
-  NumericMatrix X_sub;
+  std::vector<BasisMeta> basis_meta;
+  basis_meta.reserve(basis_p);
+
+  for (int basis_col = 0; basis_col < basis_p; basis_col++) {
+    List basis = blist[basis_col];
+    BasisMeta meta = {
+      as<IntegerVector>(basis["cols"]),
+      as<NumericVector>(basis["cutoffs"]),
+      as<IntegerVector>(basis["orders"])
+    };
+    basis_meta.push_back(meta);
+  }
 
   //for each basis function
   for (int basis_col = 0; basis_col < basis_p; basis_col++) {
-    last_cols = cols;
-    basis = (List) blist[basis_col];
-    evaluate_basis(basis, X, x_basis, basis_col);
+    evaluate_basis(basis_meta[basis_col], X, x_basis, basis_col);
   }
   x_basis.makeCompressed();
   return(x_basis);
