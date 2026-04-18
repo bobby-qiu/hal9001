@@ -125,22 +125,37 @@ void evaluate_basis(const List& basis, const NumericMatrix& X, SpMat& x_basis,
                     int basis_col) {
   int n = X.rows();
 
-
   //split basis into x[1] x[-1]
   //find sub-bases
   //intersect
   IntegerVector cols = as<IntegerVector>(basis["cols"]);
   NumericVector cutoffs = as<NumericVector>(basis["cutoffs"]);
   IntegerVector orders =  as<IntegerVector>(basis["orders"]);
+  int p = cols.length();
+
   for (int row_num = 0; row_num < n; row_num++) {
-    double value = meets_basis(X, row_num, cols, cutoffs,  orders);
-    if (value!=0) {
-      //Add value
-      x_basis.insert(row_num, basis_col) = value;
+    double value = 1.0;
+    bool keep = true;
+
+    for (int i = 0; i < p; i++) {
+      double obs = X(row_num, cols[i] - 1); // using 1-indexing for basis columns
+      int order = orders[i];
+      double cutoff = cutoffs[i];
+
+      if (!(obs >= cutoff)) {
+        keep = false;
+        break;
+      }
+
+      if (order != 0) {
+        value = value * pow((obs - cutoff), order);
+      }
     }
 
-
-
+    if (keep && value != 0) {
+      // Add value
+      x_basis.insert(row_num, basis_col) = value;
+    }
   }
 }
 
