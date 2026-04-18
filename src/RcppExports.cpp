@@ -63,19 +63,6 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
-// evaluate_basis
-void evaluate_basis(const List& basis, const NumericMatrix& X, SpMat& x_basis, int basis_col);
-RcppExport SEXP _hal9001_evaluate_basis(SEXP basisSEXP, SEXP XSEXP, SEXP x_basisSEXP, SEXP basis_colSEXP) {
-BEGIN_RCPP
-    Rcpp::RNGScope rcpp_rngScope_gen;
-    Rcpp::traits::input_parameter< const List& >::type basis(basisSEXP);
-    Rcpp::traits::input_parameter< const NumericMatrix& >::type X(XSEXP);
-    Rcpp::traits::input_parameter< SpMat& >::type x_basis(x_basisSEXP);
-    Rcpp::traits::input_parameter< int >::type basis_col(basis_colSEXP);
-    evaluate_basis(basis, X, x_basis, basis_col);
-    return R_NilValue;
-END_RCPP
-}
 // make_design_matrix
 SpMat make_design_matrix(const NumericMatrix& X, const List& blist, double p_reserve);
 RcppExport SEXP _hal9001_make_design_matrix(SEXP XSEXP, SEXP blistSEXP, SEXP p_reserveSEXP) {
@@ -129,7 +116,6 @@ static const R_CallMethodDef CallEntries[] = {
     {"_hal9001_apply_copy_map", (DL_FUNC) &_hal9001_apply_copy_map, 2},
     {"_hal9001_make_basis_list", (DL_FUNC) &_hal9001_make_basis_list, 3},
     {"_hal9001_meets_basis", (DL_FUNC) &_hal9001_meets_basis, 5},
-    {"_hal9001_evaluate_basis", (DL_FUNC) &_hal9001_evaluate_basis, 4},
     {"_hal9001_make_design_matrix", (DL_FUNC) &_hal9001_make_design_matrix, 3},
     {"_hal9001_as_dgCMatrix", (DL_FUNC) &_hal9001_as_dgCMatrix, 1},
     {"_hal9001_calc_pnz", (DL_FUNC) &_hal9001_calc_pnz, 1},

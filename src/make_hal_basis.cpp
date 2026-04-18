@@ -120,11 +120,10 @@ double meets_basis(const NumericMatrix& X, const int row_num,
 //' @param x_basis The HAL design matrix, containing indicator functions.
 //' @param basis_col Numeric indicating which column to populate.
 //'
-// [[Rcpp::export]]
-void evaluate_basis(const List& basis, const NumericMatrix& X, SpMat& x_basis,
+void evaluate_basis(const List& basis, const NumericMatrix& X,
+                    std::vector<Eigen::Triplet<double> >& triplets,
                     int basis_col) {
   int n = X.rows();
-
 
   //split basis into x[1] x[-1]
   //find sub-bases
@@ -135,12 +134,8 @@ void evaluate_basis(const List& basis, const NumericMatrix& X, SpMat& x_basis,
   for (int row_num = 0; row_num < n; row_num++) {
     double value = meets_basis(X, row_num, cols, cutoffs,  orders);
     if (value!=0) {
-      //Add value
-      x_basis.insert(row_num, basis_col) = value;
+      triplets.emplace_back(row_num, basis_col, value);
     }
-
-
-
   }
 }
 
@@ -186,8 +181,8 @@ SpMat make_design_matrix(const NumericMatrix& X, const List& blist, double p_res
   int n = X.rows();
   int basis_p = blist.size();
 
-  SpMat x_basis(n, basis_p);
-  x_basis.reserve(p_reserve * n * basis_p);
+  std::vector<Eigen::Triplet<double> > triplets;
+  triplets.reserve(p_reserve * n * basis_p);
 
   List basis;
   NumericVector cutoffs, current_row;
@@ -198,8 +193,11 @@ SpMat make_design_matrix(const NumericMatrix& X, const List& blist, double p_res
   for (int basis_col = 0; basis_col < basis_p; basis_col++) {
     last_cols = cols;
     basis = (List) blist[basis_col];
-    evaluate_basis(basis, X, x_basis, basis_col);
+    evaluate_basis(basis, X, triplets, basis_col);
   }
+
+  SpMat x_basis(n, basis_p);
+  x_basis.setFromTriplets(triplets.begin(), triplets.end());
   x_basis.makeCompressed();
   return(x_basis);
 }
