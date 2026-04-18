@@ -90,7 +90,6 @@ double meets_basis(const NumericMatrix& X, const int row_num,
   int p = cols.length();
   double value = 1;
 
-
   for (int i = 0; i<p; i++) {
     double obs = X(row_num,cols[i] - 1); // using 1-indexing for basis columns
     int order =  orders[i];
@@ -99,7 +98,16 @@ double meets_basis(const NumericMatrix& X, const int row_num,
       return(0);
     }
     if(order!=0){
-      value = value * pow((obs - cutoff),order);
+      double delta = obs - cutoff;
+      if (order == 1) {
+        value = value * delta;
+      } else if (order == 2) {
+        value = value * delta * delta;
+      } else if (order == 3) {
+        value = value * delta * delta * delta;
+      } else {
+        value = value * pow(delta, order);
+      }
     }
 
   }
