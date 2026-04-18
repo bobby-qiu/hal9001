@@ -169,12 +169,17 @@ void evaluate_basis_full(const BasisMeta& basis, const NumericMatrix& X, SpMat& 
 
     for (int i = 0; i < p; i++) {
       double obs = X(row_num, basis.cols[i] - 1);
-      double contrib = condition_value(obs, basis.cutoffs[i], basis.orders[i]);
-      if (contrib == 0.0) {
+      double cutoff = basis.cutoffs[i];
+      int order = basis.orders[i];
+
+      if (!(obs >= cutoff)) {
         keep = false;
         break;
       }
-      value *= contrib;
+
+      if (order != 0) {
+        value *= std::pow(obs - cutoff, order);
+      }
     }
 
     if (keep && value != 0.0) {
@@ -196,17 +201,26 @@ void evaluate_basis_from_parent(const BasisMeta& basis,
   rows_out.clear();
   values_out.clear();
 
+  double cutoff = basis.cutoffs[last];
+  int order = basis.orders[last];
+
   for (size_t j = 0; j < parent_rows.size(); ++j) {
     int row_num = parent_rows[j];
     double obs = X(row_num, basis.cols[last] - 1);
-    double contrib = condition_value(obs, basis.cutoffs[last], basis.orders[last]);
-    if (contrib != 0.0) {
-      double value = parent_values[j] * contrib;
-      if (value != 0.0) {
-        x_basis.insert(row_num, basis_col) = value;
-        rows_out.push_back(row_num);
-        values_out.push_back(value);
-      }
+
+    if (!(obs >= cutoff)) {
+      continue;
+    }
+
+    double value = parent_values[j];
+    if (order != 0) {
+      value *= std::pow(obs - cutoff, order);
+    }
+
+    if (value != 0.0) {
+      x_basis.insert(row_num, basis_col) = value;
+      rows_out.push_back(row_num);
+      values_out.push_back(value);
     }
   }
 }
