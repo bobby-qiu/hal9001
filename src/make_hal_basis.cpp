@@ -291,6 +291,8 @@ SpMat make_design_matrix(const NumericMatrix& X, const List& blist, double p_res
 
   std::vector< std::vector<int> > support_rows(basis_p);
   std::vector< std::vector<double> > support_values(basis_p);
+  std::vector<int> scratch_rows;
+  std::vector<double> scratch_values;
 
   for (int basis_col = 0; basis_col < basis_p; basis_col++) {
     const BasisMeta& meta = basis_meta[basis_col];
@@ -309,9 +311,11 @@ SpMat make_design_matrix(const NumericMatrix& X, const List& blist, double p_res
           X,
           x_basis,
           basis_col,
-          support_rows[basis_col],
-          support_values[basis_col]
+          scratch_rows,
+          scratch_values
         );
+        support_rows[basis_col].swap(scratch_rows);
+        support_values[basis_col].swap(scratch_values);
         continue;
       }
     }
@@ -321,9 +325,11 @@ SpMat make_design_matrix(const NumericMatrix& X, const List& blist, double p_res
       X,
       x_basis,
       basis_col,
-      support_rows[basis_col],
-      support_values[basis_col]
+      scratch_rows,
+      scratch_values
     );
+    support_rows[basis_col].swap(scratch_rows);
+    support_values[basis_col].swap(scratch_values);
   }
 
   x_basis.makeCompressed();
