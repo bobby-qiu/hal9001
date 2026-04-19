@@ -237,6 +237,22 @@ void evaluate_basis_from_parent(const BasisMeta& basis,
   }
 }
 
+inline void store_support_with_capacity_reuse(std::vector<int>& stored_rows,
+                                              std::vector<double>& stored_values,
+                                              std::vector<int>& scratch_rows,
+                                              std::vector<double>& scratch_values) {
+  size_t next_row_capacity = scratch_rows.size();
+  size_t next_value_capacity = scratch_values.size();
+
+  stored_rows.swap(scratch_rows);
+  stored_values.swap(scratch_values);
+
+  scratch_rows.clear();
+  scratch_values.clear();
+  scratch_rows.reserve(next_row_capacity);
+  scratch_values.reserve(next_value_capacity);
+}
+
 //------------------------------------------------------------------------------
 
 //' Build HAL Design Matrix
@@ -326,8 +342,12 @@ SpMat make_design_matrix(const NumericMatrix& X, const List& blist, double p_res
           scratch_rows,
           scratch_values
         );
-        support_rows[basis_col].swap(scratch_rows);
-        support_values[basis_col].swap(scratch_values);
+        store_support_with_capacity_reuse(
+          support_rows[basis_col],
+          support_values[basis_col],
+          scratch_rows,
+          scratch_values
+        );
         continue;
       }
     }
@@ -340,8 +360,12 @@ SpMat make_design_matrix(const NumericMatrix& X, const List& blist, double p_res
       scratch_rows,
       scratch_values
     );
-    support_rows[basis_col].swap(scratch_rows);
-    support_values[basis_col].swap(scratch_values);
+    store_support_with_capacity_reuse(
+      support_rows[basis_col],
+      support_values[basis_col],
+      scratch_rows,
+      scratch_values
+    );
   }
 
   x_basis.makeCompressed();
