@@ -273,6 +273,7 @@ SpMat make_design_matrix(const NumericMatrix& X, const List& blist, double p_res
   basis_meta.reserve(basis_p);
   std::unordered_map<std::string, int> basis_index;
   basis_index.reserve(basis_p);
+  std::vector<int> parent_index(basis_p, -1);
 
   for (int basis_col = 0; basis_col < basis_p; basis_col++) {
     List basis = blist[basis_col];
@@ -286,7 +287,19 @@ SpMat make_design_matrix(const NumericMatrix& X, const List& blist, double p_res
     meta.orders = Rcpp::as<std::vector<int> >(orders_r);
 
     basis_meta.push_back(meta);
-    basis_index[basis_key(basis_meta.back())] = basis_col;
+
+    std::string full_key = basis_key(basis_meta.back());
+    if (basis_meta.back().cols.size() > 1) {
+      size_t parent_end = full_key.rfind('|', full_key.size() - 2);
+      if (parent_end != std::string::npos) {
+        auto parent_it = basis_index.find(full_key.substr(0, parent_end + 1));
+        if (parent_it != basis_index.end()) {
+          parent_index[basis_col] = parent_it->second;
+        }
+      }
+    }
+
+    basis_index[full_key] = basis_col;
   }
 
   std::vector< std::vector<int> > support_rows(basis_p);
@@ -299,11 +312,9 @@ SpMat make_design_matrix(const NumericMatrix& X, const List& blist, double p_res
     int degree = static_cast<int>(meta.cols.size());
 
     if (degree > 1) {
-      std::string parent_key = basis_key(meta, degree - 1);
-      auto parent_it = basis_index.find(parent_key);
+      int parent_col = parent_index[basis_col];
 
-      if (parent_it != basis_index.end() && parent_it->second < basis_col) {
-        int parent_col = parent_it->second;
+      if (parent_col >= 0 && parent_col < basis_col) {
         evaluate_basis_from_parent(
           meta,
           support_rows[parent_col],
