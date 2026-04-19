@@ -12,6 +12,7 @@ struct BasisMeta {
   std::vector<int> cols;
   std::vector<double> cutoffs;
   std::vector<int> orders;
+  bool all_orders_zero;
 };
 
 std::string basis_key(const BasisMeta& basis, int upto = -1) {
@@ -190,6 +191,31 @@ void evaluate_basis_full(const BasisMeta& basis, const NumericMatrix& X, SpMat& 
   }
 }
 
+void evaluate_basis_full_zero_order(const BasisMeta& basis, const NumericMatrix& X,
+                                    SpMat& x_basis, int basis_col,
+                                    std::vector<int>& rows_out) {
+  int n = X.rows();
+  int p = static_cast<int>(basis.cols.size());
+
+  rows_out.clear();
+
+  for (int row_num = 0; row_num < n; row_num++) {
+    bool keep = true;
+
+    for (int i = 0; i < p; i++) {
+      if (!(X(row_num, basis.cols[i] - 1) >= basis.cutoffs[i])) {
+        keep = false;
+        break;
+      }
+    }
+
+    if (keep) {
+      x_basis.insert(row_num, basis_col) = 1.0;
+      rows_out.push_back(row_num);
+    }
+  }
+}
+
 void evaluate_basis_from_parent(const BasisMeta& basis,
                                 const std::vector<int>& parent_rows,
                                 const std::vector<double>& parent_values,
@@ -222,6 +248,28 @@ void evaluate_basis_from_parent(const BasisMeta& basis,
       rows_out.push_back(row_num);
       values_out.push_back(value);
     }
+  }
+}
+
+void evaluate_basis_from_parent_zero_order(const BasisMeta& basis,
+                                           const std::vector<int>& parent_rows,
+                                           const NumericMatrix& X, SpMat& x_basis,
+                                           int basis_col,
+                                           std::vector<int>& rows_out) {
+  int last = static_cast<int>(basis.cols.size()) - 1;
+  double cutoff = basis.cutoffs[last];
+  int col = basis.cols[last] - 1;
+
+  rows_out.clear();
+
+  for (size_t j = 0; j < parent_rows.size(); ++j) {
+    int row_num = parent_rows[j];
+    if (!(X(row_num, col) >= cutoff)) {
+      continue;
+    }
+
+    x_basis.insert(row_num, basis_col) = 1.0;
+    rows_out.push_back(row_num);
   }
 }
 
@@ -284,6 +332,13 @@ SpMat make_design_matrix(const NumericMatrix& X, const List& blist, double p_res
     meta.cols = Rcpp::as<std::vector<int> >(cols_r);
     meta.cutoffs = Rcpp::as<std::vector<double> >(cutoffs_r);
     meta.orders = Rcpp::as<std::vector<int> >(orders_r);
+    meta.all_orders_zero = true;
+    for (size_t i = 0; i < meta.orders.size(); ++i) {
+      if (meta.orders[i] != 0) {
+        meta.all_orders_zero = false;
+        break;
+      }
+    }
 
     basis_meta.push_back(meta);
     basis_index[basis_key(basis_meta.back())] = basis_col;
@@ -302,31 +357,51 @@ SpMat make_design_matrix(const NumericMatrix& X, const List& blist, double p_res
 
       if (parent_it != basis_index.end() && parent_it->second < basis_col) {
         int parent_col = parent_it->second;
-        evaluate_basis_from_parent(
-          meta,
-          support_rows[parent_col],
-          support_values[parent_col],
-          X,
-          x_basis,
-          basis_col,
-          support_rows[basis_col],
-          support_values[basis_col]
-        );
+        if (meta.all_orders_zero && basis_meta[parent_col].all_orders_zero) {
+          evaluate_basis_from_parent_zero_order(
+            meta,
+            support_rows[parent_col],
+            X,
+            x_basis,
+            basis_col,
+            support_rows[basis_col]
+          );
+        } else {
+          evaluate_basis_from_parent(
+            meta,
+            support_rows[parent_col],
+            support_values[parent_col],
+            X,
+            x_basis,
+            basis_col,
+            support_rows[basis_col],
+            support_values[basis_col]
+          );
+        }
         continue;
       }
     }
 
-    evaluate_basis_full(
-      meta,
-      X,
-      x_basis,
-      basis_col,
-      support_rows[basis_col],
-      support_values[basis_col]
-    );
+    if (meta.all_orders_zero) {
+      evaluate_basis_full_zero_order(
+        meta,
+        X,
+        x_basis,
+        basis_col,
+        support_rows[basis_col]
+      );
+    } else {
+      evaluate_basis_full(
+        meta,
+        X,
+        x_basis,
+        basis_col,
+        support_rows[basis_col],
+        support_values[basis_col]
+      );
+    }
   }
 
   x_basis.makeCompressed();
   return(x_basis);
 }
-
