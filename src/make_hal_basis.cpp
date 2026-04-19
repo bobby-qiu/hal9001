@@ -34,7 +34,18 @@ inline double condition_value(double obs, double cutoff, int order) {
   if (order == 0) {
     return 1.0;
   }
-  return std::pow(obs - cutoff, order);
+
+  double delta = obs - cutoff;
+  if (order == 1) {
+    return delta;
+  }
+  if (order == 2) {
+    return delta * delta;
+  }
+  if (order == 3) {
+    return delta * delta * delta;
+  }
+  return std::pow(delta, order);
 }
 //------------------------------------------------------------------------------
 
