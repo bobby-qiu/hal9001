@@ -38,6 +38,19 @@ std::string basis_key(const BasisMeta& basis, int upto = -1) {
   return oss.str();
 }
 
+inline double fast_pow_small(double delta, int order) {
+  if (order == 1) {
+    return delta;
+  }
+  if (order == 2) {
+    return delta * delta;
+  }
+  if (order == 3) {
+    return delta * delta * delta;
+  }
+  return std::pow(delta, order);
+}
+
 inline double condition_value(double obs, double cutoff, int order) {
   if (!(obs >= cutoff)) {
     return 0.0;
@@ -45,7 +58,7 @@ inline double condition_value(double obs, double cutoff, int order) {
   if (order == 0) {
     return 1.0;
   }
-  return std::pow(obs - cutoff, order);
+  return fast_pow_small(obs - cutoff, order);
 }
 //------------------------------------------------------------------------------
 
@@ -144,7 +157,7 @@ double meets_basis(const NumericMatrix& X, const int row_num,
       return(0);
     }
     if(order!=0){
-      value = value * pow((obs - cutoff),order);
+      value *= fast_pow_small(obs - cutoff, order);
     }
 
   }
@@ -189,7 +202,7 @@ void evaluate_basis_full(const BasisMeta& basis, const NumericMatrix& X, SpMat& 
       }
 
       if (order != 0) {
-        value *= std::pow(obs - cutoff, order);
+        value *= fast_pow_small(obs - cutoff, order);
       }
     }
 
@@ -226,7 +239,7 @@ void evaluate_basis_from_parent(const BasisMeta& basis,
 
     double value = parent_values[j];
     if (order != 0) {
-      value *= std::pow(obs - cutoff, order);
+      value *= fast_pow_small(obs - cutoff, order);
     }
 
     if (value != 0.0) {
