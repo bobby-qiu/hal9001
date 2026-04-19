@@ -187,6 +187,22 @@ void evaluate_basis_full(const BasisMeta& basis, const NumericMatrix& X, SpMat& 
   rows_out.clear();
   values_out.clear();
 
+  if (p == 1) {
+    int col = basis.cols[0] - 1;
+    double cutoff = basis.cutoffs[0];
+    int order = basis.orders[0];
+
+    for (int row_num = 0; row_num < n; ++row_num) {
+      double value = condition_value(X(row_num, col), cutoff, order);
+      if (value != 0.0) {
+        x_basis.insert(row_num, basis_col) = value;
+        rows_out.push_back(row_num);
+        values_out.push_back(value);
+      }
+    }
+    return;
+  }
+
   for (int row_num = 0; row_num < n; row_num++) {
     double value = 1.0;
     bool keep = true;
@@ -384,4 +400,3 @@ SpMat make_design_matrix(const NumericMatrix& X, const List& blist, double p_res
   x_basis.makeCompressed();
   return(x_basis);
 }
-
