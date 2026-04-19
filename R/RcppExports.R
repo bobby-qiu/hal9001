@@ -51,6 +51,17 @@ apply_copy_map <- function(X, copy_map) {
     .Call('_hal9001_apply_copy_map', PACKAGE = 'hal9001', X, copy_map)
 }
 
+#' Generate Basis Functions
+#'
+#' Populates a column (indexed by basis_col) of x_basis with basis indicators.
+#'
+#' @param basis The basis function.
+#' @param X The design matrix, containing the original data.
+#' @param x_basis The HAL design matrix, containing indicator functions.
+#' @param basis_col Numeric indicating which column to populate.
+#'
+NULL
+
 #' Sort Basis Functions
 #'
 #' Build a sorted list of unique basis functions based on columns, where each
@@ -79,19 +90,6 @@ make_basis_list <- function(X_sub, cols, order_map) {
 #'
 meets_basis <- function(X, row_num, cols, cutoffs, orders) {
     .Call('_hal9001_meets_basis', PACKAGE = 'hal9001', X, row_num, cols, cutoffs, orders)
-}
-
-#' Generate Basis Functions
-#'
-#' Populates a column (indexed by basis_col) of x_basis with basis indicators.
-#'
-#' @param basis The basis function.
-#' @param X The design matrix, containing the original data.
-#' @param x_basis The HAL design matrix, containing indicator functions.
-#' @param basis_col Numeric indicating which column to populate.
-#'
-evaluate_basis <- function(basis, X, x_basis, basis_col) {
-    invisible(.Call('_hal9001_evaluate_basis', PACKAGE = 'hal9001', basis, X, x_basis, basis_col))
 }
 
 #' Build HAL Design Matrix
