@@ -14,6 +14,21 @@ struct BasisMeta {
   std::vector<int> orders;
 };
 
+inline void reserve_if_large_parent(std::vector<int>& rows,
+                                    std::vector<double>& values,
+                                    size_t target_size) {
+  constexpr size_t kReserveThreshold = 64;
+  if (target_size < kReserveThreshold) {
+    return;
+  }
+  if (rows.capacity() < target_size) {
+    rows.reserve(target_size);
+  }
+  if (values.capacity() < target_size) {
+    values.reserve(target_size);
+  }
+}
+
 std::string basis_key(const BasisMeta& basis, int upto = -1) {
   if (upto < 0 || upto > static_cast<int>(basis.cols.size())) {
     upto = static_cast<int>(basis.cols.size());
@@ -200,6 +215,7 @@ void evaluate_basis_from_parent(const BasisMeta& basis,
 
   rows_out.clear();
   values_out.clear();
+  reserve_if_large_parent(rows_out, values_out, parent_rows.size());
 
   double cutoff = basis.cutoffs[last];
   int order = basis.orders[last];
