@@ -14,17 +14,29 @@ struct BasisMeta {
   std::vector<int> orders;
 };
 
+std::string basis_key_parts(const std::vector<int>& cols,
+                            const std::vector<double>& cutoffs,
+                            const std::vector<int>& orders,
+                            const std::vector<int>& keep) {
+  std::ostringstream oss;
+  oss.precision(std::numeric_limits<double>::max_digits10);
+  for (size_t j = 0; j < keep.size(); ++j) {
+    int i = keep[j];
+    oss << cols[i] << ':' << cutoffs[i] << ':' << orders[i] << '|';
+  }
+  return oss.str();
+}
+
 std::string basis_key(const BasisMeta& basis, int upto = -1) {
   if (upto < 0 || upto > static_cast<int>(basis.cols.size())) {
     upto = static_cast<int>(basis.cols.size());
   }
 
-  std::ostringstream oss;
-  oss.precision(std::numeric_limits<double>::max_digits10);
+  std::vector<int> keep(upto);
   for (int i = 0; i < upto; ++i) {
-    oss << basis.cols[i] << ':' << basis.cutoffs[i] << ':' << basis.orders[i] << '|';
+    keep[i] = i;
   }
-  return oss.str();
+  return basis_key_parts(basis.cols, basis.cutoffs, basis.orders, keep);
 }
 
 inline double condition_value(double obs, double cutoff, int order) {
@@ -193,30 +205,27 @@ void evaluate_basis_full(const BasisMeta& basis, const NumericMatrix& X, SpMat& 
 void evaluate_basis_from_parent(const BasisMeta& basis,
                                 const std::vector<int>& parent_rows,
                                 const std::vector<double>& parent_values,
+                                int added_index,
                                 const NumericMatrix& X, SpMat& x_basis,
                                 int basis_col, std::vector<int>& rows_out,
                                 std::vector<double>& values_out) {
-  int last = static_cast<int>(basis.cols.size()) - 1;
-
   rows_out.clear();
   values_out.clear();
 
-  double cutoff = basis.cutoffs[last];
-  int order = basis.orders[last];
+  double cutoff = basis.cutoffs[added_index];
+  int order = basis.orders[added_index];
+  int col = basis.cols[added_index] - 1;
 
   for (size_t j = 0; j < parent_rows.size(); ++j) {
     int row_num = parent_rows[j];
-    double obs = X(row_num, basis.cols[last] - 1);
+    double obs = X(row_num, col);
+    double factor = condition_value(obs, cutoff, order);
 
-    if (!(obs >= cutoff)) {
+    if (factor == 0.0) {
       continue;
     }
 
-    double value = parent_values[j];
-    if (order != 0) {
-      value *= std::pow(obs - cutoff, order);
-    }
-
+    double value = parent_values[j] * factor;
     if (value != 0.0) {
       x_basis.insert(row_num, basis_col) = value;
       rows_out.push_back(row_num);
@@ -296,16 +305,41 @@ SpMat make_design_matrix(const NumericMatrix& X, const List& blist, double p_res
     const BasisMeta& meta = basis_meta[basis_col];
     int degree = static_cast<int>(meta.cols.size());
 
-    if (degree > 1) {
-      std::string parent_key = basis_key(meta, degree - 1);
-      auto parent_it = basis_index.find(parent_key);
+    int best_parent_col = -1;
+    int best_added_index = -1;
+    size_t best_parent_support = std::numeric_limits<size_t>::max();
 
-      if (parent_it != basis_index.end() && parent_it->second < basis_col) {
-        int parent_col = parent_it->second;
+    if (degree > 1) {
+      for (int drop = 0; drop < degree; ++drop) {
+        std::vector<int> keep;
+        keep.reserve(degree - 1);
+        for (int i = 0; i < degree; ++i) {
+          if (i != drop) {
+            keep.push_back(i);
+          }
+        }
+
+        std::string parent_key = basis_key_parts(meta.cols, meta.cutoffs, meta.orders, keep);
+        auto parent_it = basis_index.find(parent_key);
+        if (parent_it == basis_index.end() || parent_it->second >= basis_col) {
+          continue;
+        }
+
+        int candidate_col = parent_it->second;
+        size_t candidate_support = support_rows[candidate_col].size();
+        if (candidate_support < best_parent_support) {
+          best_parent_support = candidate_support;
+          best_parent_col = candidate_col;
+          best_added_index = drop;
+        }
+      }
+
+      if (best_parent_col >= 0) {
         evaluate_basis_from_parent(
           meta,
-          support_rows[parent_col],
-          support_values[parent_col],
+          support_rows[best_parent_col],
+          support_values[best_parent_col],
+          best_added_index,
           X,
           x_basis,
           basis_col,
