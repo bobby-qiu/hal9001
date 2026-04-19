@@ -162,6 +162,8 @@ void evaluate_basis_full(const BasisMeta& basis, const NumericMatrix& X, SpMat& 
 
   rows_out.clear();
   values_out.clear();
+  rows_out.reserve(n);
+  values_out.reserve(n);
 
   for (int row_num = 0; row_num < n; row_num++) {
     double value = 1.0;
@@ -200,6 +202,8 @@ void evaluate_basis_from_parent(const BasisMeta& basis,
 
   rows_out.clear();
   values_out.clear();
+  rows_out.reserve(parent_rows.size());
+  values_out.reserve(parent_values.size());
 
   double cutoff = basis.cutoffs[last];
   int order = basis.orders[last];
