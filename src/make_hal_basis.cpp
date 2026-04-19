@@ -178,8 +178,8 @@ double meets_basis(const NumericMatrix& X, const int row_num,
 //' @param x_basis The HAL design matrix, containing indicator functions.
 //' @param basis_col Numeric indicating which column to populate.
 //'
-void evaluate_basis_full(const BasisMeta& basis, const NumericMatrix& X, SpMat& x_basis,
-                         int basis_col, std::vector<int>& rows_out,
+void evaluate_basis_full(const BasisMeta& basis, const NumericMatrix& X,
+                         std::vector<int>& rows_out,
                          std::vector<double>& values_out) {
   int n = X.rows();
   int p = static_cast<int>(basis.cols.size());
@@ -207,7 +207,6 @@ void evaluate_basis_full(const BasisMeta& basis, const NumericMatrix& X, SpMat& 
     }
 
     if (keep && value != 0.0) {
-      x_basis.insert(row_num, basis_col) = value;
       rows_out.push_back(row_num);
       values_out.push_back(value);
     }
@@ -217,8 +216,8 @@ void evaluate_basis_full(const BasisMeta& basis, const NumericMatrix& X, SpMat& 
 void evaluate_basis_from_parent(const BasisMeta& basis,
                                 const std::vector<int>& parent_rows,
                                 const std::vector<double>& parent_values,
-                                const NumericMatrix& X, SpMat& x_basis,
-                                int basis_col, std::vector<int>& rows_out,
+                                const NumericMatrix& X,
+                                std::vector<int>& rows_out,
                                 std::vector<double>& values_out) {
   int last = static_cast<int>(basis.cols.size()) - 1;
 
@@ -243,7 +242,6 @@ void evaluate_basis_from_parent(const BasisMeta& basis,
     }
 
     if (value != 0.0) {
-      x_basis.insert(row_num, basis_col) = value;
       rows_out.push_back(row_num);
       values_out.push_back(value);
     }
@@ -307,9 +305,6 @@ SpMat make_design_matrix(const NumericMatrix& X, const List& blist, double p_res
   int n = X.rows();
   int basis_p = blist.size();
 
-  SpMat x_basis(n, basis_p);
-  x_basis.reserve(p_reserve * n * basis_p);
-
   std::vector<BasisMeta> basis_meta;
   basis_meta.reserve(basis_p);
   std::unordered_map<std::string, int> basis_index;
@@ -350,8 +345,6 @@ SpMat make_design_matrix(const NumericMatrix& X, const List& blist, double p_res
           support_rows[parent_col],
           support_values[parent_col],
           X,
-          x_basis,
-          basis_col,
           scratch_rows,
           scratch_values
         );
@@ -368,8 +361,6 @@ SpMat make_design_matrix(const NumericMatrix& X, const List& blist, double p_res
     evaluate_basis_full(
       meta,
       X,
-      x_basis,
-      basis_col,
       scratch_rows,
       scratch_values
     );
@@ -381,7 +372,23 @@ SpMat make_design_matrix(const NumericMatrix& X, const List& blist, double p_res
     );
   }
 
-  x_basis.makeCompressed();
+  size_t total_nonzeros = 0;
+  for (int basis_col = 0; basis_col < basis_p; ++basis_col) {
+    total_nonzeros += support_rows[basis_col].size();
+  }
+
+  std::vector<Eigen::Triplet<double> > triplets;
+  triplets.reserve(total_nonzeros);
+
+  for (int basis_col = 0; basis_col < basis_p; ++basis_col) {
+    const std::vector<int>& rows = support_rows[basis_col];
+    const std::vector<double>& values = support_values[basis_col];
+    for (size_t j = 0; j < rows.size(); ++j) {
+      triplets.emplace_back(rows[j], basis_col, values[j]);
+    }
+  }
+
+  SpMat x_basis(n, basis_p);
+  x_basis.setFromTriplets(triplets.begin(), triplets.end());
   return(x_basis);
 }
-
