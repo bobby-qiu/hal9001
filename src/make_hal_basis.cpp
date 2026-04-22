@@ -9,20 +9,40 @@
 using namespace Rcpp;
 
 struct BasisMeta {
-  std::vector<int> cols;
+  std::vector<int> cols0;
   std::vector<double> cutoffs;
   std::vector<int> orders;
 };
 
+inline double matrix_value(const double* x_ptr, int n, int row, int col0) {
+  return x_ptr[row + n * col0];
+}
+
+inline void store_support_with_capacity_reuse(std::vector<int>& stored_rows,
+                                              std::vector<double>& stored_values,
+                                              std::vector<int>& scratch_rows,
+                                              std::vector<double>& scratch_values) {
+  size_t next_row_capacity = scratch_rows.size();
+  size_t next_value_capacity = scratch_values.size();
+
+  stored_rows.swap(scratch_rows);
+  stored_values.swap(scratch_values);
+
+  scratch_rows.clear();
+  scratch_values.clear();
+  scratch_rows.reserve(next_row_capacity);
+  scratch_values.reserve(next_value_capacity);
+}
+
 std::string basis_key(const BasisMeta& basis, int upto = -1) {
-  if (upto < 0 || upto > static_cast<int>(basis.cols.size())) {
-    upto = static_cast<int>(basis.cols.size());
+  if (upto < 0 || upto > static_cast<int>(basis.cols0.size())) {
+    upto = static_cast<int>(basis.cols0.size());
   }
 
   std::ostringstream oss;
   oss.precision(std::numeric_limits<double>::max_digits10);
   for (int i = 0; i < upto; ++i) {
-    oss << basis.cols[i] << ':' << basis.cutoffs[i] << ':' << basis.orders[i] << '|';
+    oss << basis.cols0[i] << ':' << basis.cutoffs[i] << ':' << basis.orders[i] << '|';
   }
   return oss.str();
 }
@@ -154,11 +174,11 @@ double meets_basis(const NumericMatrix& X, const int row_num,
 //' @param x_basis The HAL design matrix, containing indicator functions.
 //' @param basis_col Numeric indicating which column to populate.
 //'
-void evaluate_basis_full(const BasisMeta& basis, const NumericMatrix& X, SpMat& x_basis,
-                         int basis_col, std::vector<int>& rows_out,
+void evaluate_basis_full(const BasisMeta& basis, const double* x_ptr, int n,
+                         SpMat& x_basis, int basis_col,
+                         std::vector<int>& rows_out,
                          std::vector<double>& values_out) {
-  int n = X.rows();
-  int p = static_cast<int>(basis.cols.size());
+  int p = static_cast<int>(basis.cols0.size());
 
   rows_out.clear();
   values_out.clear();
@@ -168,7 +188,7 @@ void evaluate_basis_full(const BasisMeta& basis, const NumericMatrix& X, SpMat& 
     bool keep = true;
 
     for (int i = 0; i < p; i++) {
-      double obs = X(row_num, basis.cols[i] - 1);
+      double obs = matrix_value(x_ptr, n, row_num, basis.cols0[i]);
       double cutoff = basis.cutoffs[i];
       int order = basis.orders[i];
 
@@ -193,20 +213,21 @@ void evaluate_basis_full(const BasisMeta& basis, const NumericMatrix& X, SpMat& 
 void evaluate_basis_from_parent(const BasisMeta& basis,
                                 const std::vector<int>& parent_rows,
                                 const std::vector<double>& parent_values,
-                                const NumericMatrix& X, SpMat& x_basis,
+                                const double* x_ptr, int n, SpMat& x_basis,
                                 int basis_col, std::vector<int>& rows_out,
                                 std::vector<double>& values_out) {
-  int last = static_cast<int>(basis.cols.size()) - 1;
+  int last = static_cast<int>(basis.cols0.size()) - 1;
 
   rows_out.clear();
   values_out.clear();
 
   double cutoff = basis.cutoffs[last];
   int order = basis.orders[last];
+  int col0 = basis.cols0[last];
 
   for (size_t j = 0; j < parent_rows.size(); ++j) {
     int row_num = parent_rows[j];
-    double obs = X(row_num, basis.cols[last] - 1);
+    double obs = matrix_value(x_ptr, n, row_num, col0);
 
     if (!(obs >= cutoff)) {
       continue;
@@ -265,6 +286,7 @@ void evaluate_basis_from_parent(const BasisMeta& basis,
 SpMat make_design_matrix(const NumericMatrix& X, const List& blist, double p_reserve = 0.5) {
   int n = X.rows();
   int basis_p = blist.size();
+  const double* x_ptr = REAL(X);
 
   SpMat x_basis(n, basis_p);
   x_basis.reserve(p_reserve * n * basis_p);
@@ -281,7 +303,10 @@ SpMat make_design_matrix(const NumericMatrix& X, const List& blist, double p_res
     IntegerVector orders_r = as<IntegerVector>(basis["orders"]);
 
     BasisMeta meta;
-    meta.cols = Rcpp::as<std::vector<int> >(cols_r);
+    meta.cols0.reserve(cols_r.size());
+    for (int i = 0; i < cols_r.size(); ++i) {
+      meta.cols0.push_back(cols_r[i] - 1);
+    }
     meta.cutoffs = Rcpp::as<std::vector<double> >(cutoffs_r);
     meta.orders = Rcpp::as<std::vector<int> >(orders_r);
 
@@ -296,7 +321,7 @@ SpMat make_design_matrix(const NumericMatrix& X, const List& blist, double p_res
 
   for (int basis_col = 0; basis_col < basis_p; basis_col++) {
     const BasisMeta& meta = basis_meta[basis_col];
-    int degree = static_cast<int>(meta.cols.size());
+    int degree = static_cast<int>(meta.cols0.size());
 
     if (degree > 1) {
       std::string parent_key = basis_key(meta, degree - 1);
@@ -308,28 +333,38 @@ SpMat make_design_matrix(const NumericMatrix& X, const List& blist, double p_res
           meta,
           support_rows[parent_col],
           support_values[parent_col],
-          X,
+          x_ptr,
+          n,
           x_basis,
           basis_col,
           scratch_rows,
           scratch_values
         );
-        support_rows[basis_col].swap(scratch_rows);
-        support_values[basis_col].swap(scratch_values);
+        store_support_with_capacity_reuse(
+          support_rows[basis_col],
+          support_values[basis_col],
+          scratch_rows,
+          scratch_values
+        );
         continue;
       }
     }
 
     evaluate_basis_full(
       meta,
-      X,
+      x_ptr,
+      n,
       x_basis,
       basis_col,
       scratch_rows,
       scratch_values
     );
-    support_rows[basis_col].swap(scratch_rows);
-    support_values[basis_col].swap(scratch_values);
+    store_support_with_capacity_reuse(
+      support_rows[basis_col],
+      support_values[basis_col],
+      scratch_rows,
+      scratch_values
+    );
   }
 
   x_basis.makeCompressed();
