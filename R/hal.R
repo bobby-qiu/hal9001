@@ -204,19 +204,11 @@ compute_adaptive_gaussian_screen_target <- function(
   penalized_count <- length(basis_list)
   n_obs <- nrow(x_basis)
 
-  auto_min_basis <- as.integer(fit_control$approx_auto_min_basis %||% 1500L)
-  auto_min_ratio <- fit_control$approx_auto_min_ratio %||% 1.25
-  auto_trigger_basis <- max(auto_min_basis, ceiling(n_obs * auto_min_ratio))
-
-  if (penalized_count < auto_trigger_basis) {
-    return(list(use = FALSE, target = penalized_count, trigger_basis = auto_trigger_basis))
-  }
-
-  approx_screen_ratio <- fit_control$approx_screen_ratio %||% 0.35
-  approx_screen_max_basis <- as.integer(fit_control$approx_screen_max_basis %||% 1200L)
-  approx_screen_min_basis <- as.integer(fit_control$approx_screen_min_basis %||% 400L)
-  approx_screen_n_multiplier <- fit_control$approx_screen_n_multiplier %||% 0.75
-  approx_screen_geom_multiplier <- fit_control$approx_screen_geom_multiplier %||% 1.35
+  approx_screen_ratio <- fit_control$approx_screen_ratio %||% 0.2
+  approx_screen_max_basis <- as.integer(fit_control$approx_screen_max_basis %||% 600L)
+  approx_screen_min_basis <- as.integer(fit_control$approx_screen_min_basis %||% 250L)
+  approx_screen_n_multiplier <- fit_control$approx_screen_n_multiplier %||% 0.35
+  approx_screen_geom_multiplier <- fit_control$approx_screen_geom_multiplier %||% 0.6
 
   adaptive_target <- max(
     approx_screen_min_basis,
@@ -227,7 +219,18 @@ compute_adaptive_gaussian_screen_target <- function(
   adaptive_target <- min(approx_screen_max_basis, adaptive_target)
   adaptive_target <- min(penalized_count, adaptive_target)
 
-  list(use = adaptive_target < penalized_count, target = adaptive_target, trigger_basis = auto_trigger_basis)
+  auto_min_basis <- as.integer(fit_control$approx_auto_min_basis %||% 600L)
+  auto_min_ratio <- fit_control$approx_auto_min_ratio %||% 0.9
+  auto_gap_ratio <- fit_control$approx_auto_gap_ratio %||% 1.2
+  auto_min_excess <- as.integer(fit_control$approx_auto_min_excess %||% 100L)
+  auto_trigger_basis <- max(
+    auto_min_basis,
+    ceiling(n_obs * auto_min_ratio),
+    ceiling(adaptive_target * auto_gap_ratio),
+    adaptive_target + auto_min_excess
+  )
+
+  list(use = penalized_count >= auto_trigger_basis, target = adaptive_target, trigger_basis = auto_trigger_basis)
 }
 
 should_use_approx_gaussian_backend <- function(fam, fit_control, lambda, weights,
@@ -292,13 +295,15 @@ fit_hal <- function(X,
                       lambda.min.ratio = 1e-4,
                       prediction_bounds = "default",
                       approx_backend = "auto",
-                      approx_auto_min_basis = 1500L,
-                      approx_auto_min_ratio = 1.25,
-                      approx_screen_ratio = 0.35,
-                      approx_screen_n_multiplier = 0.75,
-                      approx_screen_geom_multiplier = 1.35,
-                      approx_screen_max_basis = 1200L,
-                      approx_screen_min_basis = 400L
+                      approx_auto_min_basis = 600L,
+                      approx_auto_min_ratio = 0.9,
+                      approx_auto_gap_ratio = 1.2,
+                      approx_auto_min_excess = 100L,
+                      approx_screen_ratio = 0.2,
+                      approx_screen_n_multiplier = 0.35,
+                      approx_screen_geom_multiplier = 0.6,
+                      approx_screen_max_basis = 600L,
+                      approx_screen_min_basis = 250L
                     ),
                     basis_list = NULL,
                     return_lasso = TRUE,
@@ -316,13 +321,15 @@ fit_hal <- function(X,
     lambda.min.ratio = 1e-4,
     prediction_bounds = "default",
     approx_backend = "auto",
-    approx_auto_min_basis = 1500L,
-    approx_auto_min_ratio = 1.25,
-    approx_screen_ratio = 0.35,
-    approx_screen_n_multiplier = 0.75,
-    approx_screen_geom_multiplier = 1.35,
-    approx_screen_max_basis = 1200L,
-    approx_screen_min_basis = 400L
+    approx_auto_min_basis = 600L,
+    approx_auto_min_ratio = 0.9,
+    approx_auto_gap_ratio = 1.2,
+    approx_auto_min_excess = 100L,
+    approx_screen_ratio = 0.2,
+    approx_screen_n_multiplier = 0.35,
+    approx_screen_geom_multiplier = 0.6,
+    approx_screen_max_basis = 600L,
+    approx_screen_min_basis = 250L
   )
   if (any(!names(defaults) %in% names(fit_control))) {
     fit_control <- c(
@@ -609,6 +616,8 @@ fit_hal <- function(X,
   fit_control$approx_backend <- NULL
   fit_control$approx_auto_min_basis <- NULL
   fit_control$approx_auto_min_ratio <- NULL
+  fit_control$approx_auto_gap_ratio <- NULL
+  fit_control$approx_auto_min_excess <- NULL
   fit_control$approx_screen_ratio <- NULL
   fit_control$approx_screen_n_multiplier <- NULL
   fit_control$approx_screen_geom_multiplier <- NULL
