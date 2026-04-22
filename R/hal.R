@@ -170,6 +170,64 @@
 #' y <- rbinom(n = n, size = 1, prob = y_prob)
 #' hal_fit <- fit_hal(X = x, Y = y, family = "binomial")
 #' preds <- predict(hal_fit, new_data = x)
+screen_basis_for_gaussian_fit <- function(x_basis, y, max_basis, penalty_factor,
+                                          unpenalized_covariates = 0L) {
+  p_total <- ncol(x_basis)
+  penalized_cols <- seq_len(max(0L, p_total - unpenalized_covariates))
+  unpenalized_cols <- if (unpenalized_covariates > 0L) {
+    seq.int(p_total - unpenalized_covariates + 1L, p_total)
+  } else {
+    integer(0)
+  }
+
+  if (length(penalized_cols) <= max_basis) {
+    return(seq_len(p_total))
+  }
+
+  y_centered <- as.numeric(y - mean(y))
+  scores <- as.numeric(abs(Matrix::crossprod(x_basis[, penalized_cols, drop = FALSE], y_centered)))
+  norms <- sqrt(as.numeric(Matrix::colSums(x_basis[, penalized_cols, drop = FALSE]^2)))
+  finite <- is.finite(scores) & is.finite(norms) & norms > 0
+  scaled_scores <- rep(-Inf, length(scores))
+  scaled_scores[finite] <- scores[finite] / norms[finite]
+
+  keep_penalized <- penalized_cols[order(scaled_scores, decreasing = TRUE)[seq_len(max_basis)]]
+  sort(c(keep_penalized, unpenalized_cols))
+}
+
+should_use_approx_gaussian_backend <- function(fam, fit_control, lambda, weights,
+                                               offset, x_basis, basis_list) {
+  approx_mode <- fit_control$approx_backend
+  if (is.null(approx_mode)) {
+    approx_mode <- "auto"
+  }
+
+  if (identical(approx_mode, FALSE) || identical(approx_mode, "off")) {
+    return(FALSE)
+  }
+
+  eligible <- identical(fam, "gaussian") &&
+    isTRUE(fit_control$cv_select) &&
+    is.null(lambda) &&
+    is.null(weights) &&
+    is.null(offset) &&
+    !is.null(x_basis) &&
+    !is.null(basis_list)
+
+  if (!eligible) {
+    return(FALSE)
+  }
+
+  if (identical(approx_mode, TRUE) || identical(approx_mode, "on") || identical(approx_mode, "force")) {
+    return(TRUE)
+  }
+
+  auto_min_basis <- fit_control$approx_auto_min_basis %||% 1500L
+  ncol(x_basis) >= auto_min_basis
+}
+
+`%||%` <- function(x, y) if (is.null(x)) y else x
+
 fit_hal <- function(X,
                     Y,
                     formula = NULL,
@@ -193,7 +251,12 @@ fit_hal <- function(X,
                       cv_select = TRUE,
                       use_min = TRUE,
                       lambda.min.ratio = 1e-4,
-                      prediction_bounds = "default"
+                      prediction_bounds = "default",
+                      approx_backend = "auto",
+                      approx_auto_min_basis = 1500L,
+                      approx_screen_ratio = 0.35,
+                      approx_screen_max_basis = 1200L,
+                      approx_screen_min_basis = 400L
                     ),
                     basis_list = NULL,
                     return_lasso = TRUE,
@@ -206,8 +269,15 @@ fit_hal <- function(X,
 
   # errors when a supplied control list is missing arguments
   defaults <- list(
-    cv_select = TRUE, use_min = TRUE, lambda.min.ratio = 1e-4,
-    prediction_bounds = "default"
+    cv_select = TRUE,
+    use_min = TRUE,
+    lambda.min.ratio = 1e-4,
+    prediction_bounds = "default",
+    approx_backend = "auto",
+    approx_auto_min_basis = 1500L,
+    approx_screen_ratio = 0.35,
+    approx_screen_max_basis = 1200L,
+    approx_screen_min_basis = 400L
   )
   if (any(!names(defaults) %in% names(fit_control))) {
     fit_control <- c(
@@ -424,6 +494,51 @@ fit_hal <- function(X,
   }
 
   # just use the standard implementation available in glmnet
+  approx_fit_meta <- list(
+    used = FALSE,
+    original_basis_count = ncol(x_basis),
+    screened_basis_count = ncol(x_basis)
+  )
+
+  if (should_use_approx_gaussian_backend(
+    fam = fam,
+    fit_control = fit_control,
+    lambda = lambda,
+    weights = weights,
+    offset = offset,
+    x_basis = x_basis,
+    basis_list = basis_list
+  )) {
+    penalized_count <- length(basis_list)
+    approx_screen_ratio <- fit_control$approx_screen_ratio %||% 0.35
+    approx_screen_max_basis <- as.integer(fit_control$approx_screen_max_basis %||% 1200L)
+    approx_screen_min_basis <- as.integer(fit_control$approx_screen_min_basis %||% 400L)
+    screen_target <- max(approx_screen_min_basis,
+      min(approx_screen_max_basis, ceiling(penalized_count * approx_screen_ratio))
+    )
+
+    if (screen_target < penalized_count) {
+      keep_cols <- screen_basis_for_gaussian_fit(
+        x_basis = x_basis,
+        y = Y,
+        max_basis = screen_target,
+        penalty_factor = penalty_factor,
+        unpenalized_covariates = unpenalized_covariates
+      )
+      x_basis <- x_basis[, keep_cols, drop = FALSE]
+      penalty_factor <- penalty_factor[keep_cols]
+      penalized_keep <- keep_cols[keep_cols <= length(basis_list)]
+      basis_list <- basis_list[penalized_keep]
+      copy_map <- seq_along(basis_list)
+      names(copy_map) <- seq_along(basis_list)
+      approx_fit_meta <- list(
+        used = TRUE,
+        original_basis_count = penalized_count,
+        screened_basis_count = length(penalized_keep)
+      )
+    }
+  }
+
   fit_control$x <- x_basis
   fit_control$y <- Y
   fit_control$standardize <- FALSE
@@ -432,6 +547,12 @@ fit_hal <- function(X,
   fit_control$penalty.factor <- penalty_factor
   fit_control$offset <- offset
   fit_control$weights <- weights
+
+  fit_control$approx_backend <- NULL
+  fit_control$approx_auto_min_basis <- NULL
+  fit_control$approx_screen_ratio <- NULL
+  fit_control$approx_screen_max_basis <- NULL
+  fit_control$approx_screen_min_basis <- NULL
 
   if (!fit_control$cv_select) {
     hal_lasso <- do.call(glmnet::glmnet, fit_control)
@@ -504,7 +625,8 @@ fit_hal <- function(X,
         NULL
       },
     unpenalized_covariates = unpenalized_covariates,
-    prediction_bounds = fit_control$prediction_bounds
+    prediction_bounds = fit_control$prediction_bounds,
+    approx_fit = approx_fit_meta
   )
   class(fit) <- "hal9001"
   return(fit)
