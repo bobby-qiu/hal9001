@@ -160,6 +160,88 @@
 #'
 #' @rdname fit_hal
 #'
+#' @keywords internal
+adaptive_screen_basis <- function(x_basis,
+                                  Y,
+                                  family,
+                                  weights = NULL,
+                                  unpenalized_covariates = 0L) {
+  fam <- ifelse(inherits(family, "family"), family$family, family)
+  n_total <- ncol(x_basis)
+  n_penalized <- n_total - unpenalized_covariates
+
+  if (fam != "gaussian" || n_penalized <= 0L || !is.numeric(Y) || length(dim(Y)) > 1L) {
+    return(list(
+      x = x_basis,
+      selected_columns = seq_len(n_total),
+      applied = FALSE,
+      n_total = n_total,
+      n_selected = n_total,
+      n_penalized_total = n_penalized,
+      n_penalized_selected = n_penalized
+    ))
+  }
+
+  target_keep <- max(4000L, 8L * nrow(x_basis))
+  if (n_penalized <= as.integer(1.5 * target_keep)) {
+    return(list(
+      x = x_basis,
+      selected_columns = seq_len(n_total),
+      applied = FALSE,
+      n_total = n_total,
+      n_selected = n_total,
+      n_penalized_total = n_penalized,
+      n_penalized_selected = n_penalized
+    ))
+  }
+
+  penalized_idx <- seq_len(n_penalized)
+  x_penalized <- x_basis[, penalized_idx, drop = FALSE]
+  y_centered <- as.numeric(Y)
+
+  if (is.null(weights)) {
+    y_centered <- y_centered - mean(y_centered)
+    score_num <- as.vector(Matrix::crossprod(x_penalized, y_centered))
+    score_den <- sqrt(pmax(as.vector(Matrix::colSums(x_penalized * x_penalized)), .Machine$double.eps))
+  } else {
+    sqrt_w <- sqrt(as.numeric(weights))
+    y_centered <- y_centered - stats::weighted.mean(y_centered, w = weights)
+    x_weighted <- x_penalized * sqrt_w
+    y_weighted <- y_centered * sqrt_w
+    score_num <- as.vector(Matrix::crossprod(x_weighted, y_weighted))
+    score_den <- sqrt(pmax(as.vector(Matrix::colSums(x_weighted * x_weighted)), .Machine$double.eps))
+  }
+
+  scores <- abs(score_num) / score_den
+  keep_n <- min(n_penalized, target_keep)
+  keep_penalized <- order(scores, decreasing = TRUE)[seq_len(keep_n)]
+  keep_penalized <- sort.int(keep_penalized, method = "radix")
+
+  selected_columns <- keep_penalized
+  if (unpenalized_covariates > 0L) {
+    selected_columns <- c(selected_columns, seq.int(n_penalized + 1L, n_total))
+  }
+
+  list(
+    x = x_basis[, selected_columns, drop = FALSE],
+    selected_columns = selected_columns,
+    applied = TRUE,
+    n_total = n_total,
+    n_selected = length(selected_columns),
+    n_penalized_total = n_penalized,
+    n_penalized_selected = keep_n
+  )
+}
+
+#' @keywords internal
+expand_screened_coefs <- function(coefs, selected_columns, n_total_columns) {
+  coefs <- as.matrix(coefs)
+  full_coefs <- matrix(0, nrow = n_total_columns + 1L, ncol = ncol(coefs))
+  full_coefs[1, ] <- coefs[1, ]
+  full_coefs[selected_columns + 1L, ] <- coefs[-1, , drop = FALSE]
+  full_coefs
+}
+
 #' @export
 #'
 #' @examples
@@ -411,6 +493,21 @@ fit_hal <- function(X,
     x_basis <- as.matrix(x_basis)
   }
 
+  # bookkeeping: get start time of screening procedure
+  time_start_screen_basis <- proc.time()
+
+  screened_basis <- adaptive_screen_basis(
+    x_basis = x_basis,
+    Y = Y,
+    family = family,
+    weights = weights,
+    unpenalized_covariates = unpenalized_covariates
+  )
+  glmnet_x_basis <- screened_basis$x
+  glmnet_penalty_factor <- penalty_factor[screened_basis$selected_columns]
+
+  time_screen_basis <- proc.time()
+
   # bookkeeping: get start time of lasso
   time_start_lasso <- proc.time()
 
@@ -424,19 +521,19 @@ fit_hal <- function(X,
   }
 
   # just use the standard implementation available in glmnet
-  fit_control$x <- x_basis
+  fit_control$x <- glmnet_x_basis
   fit_control$y <- Y
   fit_control$standardize <- FALSE
   fit_control$family <- family
   fit_control$lambda <- lambda
-  fit_control$penalty.factor <- penalty_factor
+  fit_control$penalty.factor <- glmnet_penalty_factor
   fit_control$offset <- offset
   fit_control$weights <- weights
 
   if (!fit_control$cv_select) {
     hal_lasso <- do.call(glmnet::glmnet, fit_control)
     lambda_star <- hal_lasso$lambda
-    coefs <- stats::coef(hal_lasso)
+    reduced_coefs <- stats::coef(hal_lasso)
   } else {
     hal_lasso <- do.call(glmnet::cv.glmnet, fit_control)
     if (fit_control$use_min) {
@@ -446,8 +543,14 @@ fit_hal <- function(X,
       lambda_type <- "lambda.1se"
       lambda_star <- hal_lasso$lambda.1se
     }
-    coefs <- stats::coef(hal_lasso, lambda_type)
+    reduced_coefs <- stats::coef(hal_lasso, lambda_type)
   }
+
+  coefs <- expand_screened_coefs(
+    coefs = reduced_coefs,
+    selected_columns = screened_basis$selected_columns,
+    n_total_columns = ncol(x_basis)
+  )
 
   # bookkeeping: get time for computation of the lasso regression
   time_lasso <- proc.time()
@@ -461,6 +564,7 @@ fit_hal <- function(X,
     design_matrix = time_design_matrix - time_enumerate_basis,
     reduce_basis = time_reduce_basis - time_design_matrix,
     remove_duplicates = time_rm_duplicates - time_reduce_basis,
+    screen_basis = time_screen_basis - time_start_screen_basis,
     lasso = time_lasso - time_start_lasso,
     total = time_final - time_start
   )
@@ -504,7 +608,15 @@ fit_hal <- function(X,
         NULL
       },
     unpenalized_covariates = unpenalized_covariates,
-    prediction_bounds = fit_control$prediction_bounds
+    prediction_bounds = fit_control$prediction_bounds,
+    screening = list(
+      applied = screened_basis$applied,
+      selected_columns = screened_basis$selected_columns,
+      n_total = screened_basis$n_total,
+      n_selected = screened_basis$n_selected,
+      n_penalized_total = screened_basis$n_penalized_total,
+      n_penalized_selected = screened_basis$n_penalized_selected
+    )
   )
   class(fit) <- "hal9001"
   return(fit)
