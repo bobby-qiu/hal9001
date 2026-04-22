@@ -195,6 +195,41 @@ screen_basis_for_gaussian_fit <- function(x_basis, y, max_basis, penalty_factor,
   sort(c(keep_penalized, unpenalized_cols))
 }
 
+compute_adaptive_gaussian_screen_target <- function(
+  x_basis,
+  basis_list,
+  fit_control,
+  unpenalized_covariates = 0L
+) {
+  penalized_count <- length(basis_list)
+  n_obs <- nrow(x_basis)
+
+  auto_min_basis <- as.integer(fit_control$approx_auto_min_basis %||% 1500L)
+  auto_min_ratio <- fit_control$approx_auto_min_ratio %||% 1.25
+  auto_trigger_basis <- max(auto_min_basis, ceiling(n_obs * auto_min_ratio))
+
+  if (penalized_count < auto_trigger_basis) {
+    return(list(use = FALSE, target = penalized_count, trigger_basis = auto_trigger_basis))
+  }
+
+  approx_screen_ratio <- fit_control$approx_screen_ratio %||% 0.35
+  approx_screen_max_basis <- as.integer(fit_control$approx_screen_max_basis %||% 1200L)
+  approx_screen_min_basis <- as.integer(fit_control$approx_screen_min_basis %||% 400L)
+  approx_screen_n_multiplier <- fit_control$approx_screen_n_multiplier %||% 0.75
+  approx_screen_geom_multiplier <- fit_control$approx_screen_geom_multiplier %||% 1.35
+
+  adaptive_target <- max(
+    approx_screen_min_basis,
+    ceiling(penalized_count * approx_screen_ratio),
+    ceiling(n_obs * approx_screen_n_multiplier),
+    ceiling(sqrt(n_obs * penalized_count) * approx_screen_geom_multiplier)
+  )
+  adaptive_target <- min(approx_screen_max_basis, adaptive_target)
+  adaptive_target <- min(penalized_count, adaptive_target)
+
+  list(use = adaptive_target < penalized_count, target = adaptive_target, trigger_basis = auto_trigger_basis)
+}
+
 should_use_approx_gaussian_backend <- function(fam, fit_control, lambda, weights,
                                                offset, x_basis, basis_list) {
   approx_mode <- fit_control$approx_backend
@@ -222,8 +257,12 @@ should_use_approx_gaussian_backend <- function(fam, fit_control, lambda, weights
     return(TRUE)
   }
 
-  auto_min_basis <- fit_control$approx_auto_min_basis %||% 1500L
-  ncol(x_basis) >= auto_min_basis
+  adaptive_screen <- compute_adaptive_gaussian_screen_target(
+    x_basis = x_basis,
+    basis_list = basis_list,
+    fit_control = fit_control
+  )
+  adaptive_screen$use
 }
 
 `%||%` <- function(x, y) if (is.null(x)) y else x
@@ -254,7 +293,10 @@ fit_hal <- function(X,
                       prediction_bounds = "default",
                       approx_backend = "auto",
                       approx_auto_min_basis = 1500L,
+                      approx_auto_min_ratio = 1.25,
                       approx_screen_ratio = 0.35,
+                      approx_screen_n_multiplier = 0.75,
+                      approx_screen_geom_multiplier = 1.35,
                       approx_screen_max_basis = 1200L,
                       approx_screen_min_basis = 400L
                     ),
@@ -275,7 +317,10 @@ fit_hal <- function(X,
     prediction_bounds = "default",
     approx_backend = "auto",
     approx_auto_min_basis = 1500L,
+    approx_auto_min_ratio = 1.25,
     approx_screen_ratio = 0.35,
+    approx_screen_n_multiplier = 0.75,
+    approx_screen_geom_multiplier = 1.35,
     approx_screen_max_basis = 1200L,
     approx_screen_min_basis = 400L
   )
@@ -497,7 +542,9 @@ fit_hal <- function(X,
   approx_fit_meta <- list(
     used = FALSE,
     original_basis_count = ncol(x_basis),
-    screened_basis_count = ncol(x_basis)
+    screened_basis_count = ncol(x_basis),
+    auto_trigger_basis = NA_integer_,
+    screen_target = ncol(x_basis)
   )
 
   if (should_use_approx_gaussian_backend(
@@ -510,12 +557,13 @@ fit_hal <- function(X,
     basis_list = basis_list
   )) {
     penalized_count <- length(basis_list)
-    approx_screen_ratio <- fit_control$approx_screen_ratio %||% 0.35
-    approx_screen_max_basis <- as.integer(fit_control$approx_screen_max_basis %||% 1200L)
-    approx_screen_min_basis <- as.integer(fit_control$approx_screen_min_basis %||% 400L)
-    screen_target <- max(approx_screen_min_basis,
-      min(approx_screen_max_basis, ceiling(penalized_count * approx_screen_ratio))
+    adaptive_screen <- compute_adaptive_gaussian_screen_target(
+      x_basis = x_basis,
+      basis_list = basis_list,
+      fit_control = fit_control,
+      unpenalized_covariates = unpenalized_covariates
     )
+    screen_target <- adaptive_screen$target
 
     if (screen_target < penalized_count) {
       keep_cols <- screen_basis_for_gaussian_fit(
@@ -534,7 +582,17 @@ fit_hal <- function(X,
       approx_fit_meta <- list(
         used = TRUE,
         original_basis_count = penalized_count,
-        screened_basis_count = length(penalized_keep)
+        screened_basis_count = length(penalized_keep),
+        auto_trigger_basis = adaptive_screen$trigger_basis,
+        screen_target = screen_target
+      )
+    } else {
+      approx_fit_meta <- list(
+        used = FALSE,
+        original_basis_count = penalized_count,
+        screened_basis_count = penalized_count,
+        auto_trigger_basis = adaptive_screen$trigger_basis,
+        screen_target = penalized_count
       )
     }
   }
@@ -550,7 +608,10 @@ fit_hal <- function(X,
 
   fit_control$approx_backend <- NULL
   fit_control$approx_auto_min_basis <- NULL
+  fit_control$approx_auto_min_ratio <- NULL
   fit_control$approx_screen_ratio <- NULL
+  fit_control$approx_screen_n_multiplier <- NULL
+  fit_control$approx_screen_geom_multiplier <- NULL
   fit_control$approx_screen_max_basis <- NULL
   fit_control$approx_screen_min_basis <- NULL
 
