@@ -171,7 +171,8 @@
 #' hal_fit <- fit_hal(X = x, Y = y, family = "binomial")
 #' preds <- predict(hal_fit, new_data = x)
 screen_basis_for_gaussian_fit <- function(x_basis, y, max_basis, penalty_factor,
-                                          unpenalized_covariates = 0L) {
+                                          unpenalized_covariates = 0L,
+                                          candidate_penalized_cols = NULL) {
   p_total <- ncol(x_basis)
   penalized_cols <- seq_len(max(0L, p_total - unpenalized_covariates))
   unpenalized_cols <- if (unpenalized_covariates > 0L) {
@@ -180,19 +181,79 @@ screen_basis_for_gaussian_fit <- function(x_basis, y, max_basis, penalty_factor,
     integer(0)
   }
 
-  if (length(penalized_cols) <= max_basis) {
-    return(seq_len(p_total))
+  if (is.null(candidate_penalized_cols)) {
+    candidate_penalized_cols <- penalized_cols
+  } else {
+    candidate_penalized_cols <- sort(intersect(as.integer(candidate_penalized_cols), penalized_cols))
+  }
+
+  if (length(candidate_penalized_cols) <= max_basis) {
+    return(sort(c(candidate_penalized_cols, unpenalized_cols)))
   }
 
   y_centered <- as.numeric(y - mean(y))
-  scores <- as.numeric(abs(Matrix::crossprod(x_basis[, penalized_cols, drop = FALSE], y_centered)))
-  norms <- sqrt(as.numeric(Matrix::colSums(x_basis[, penalized_cols, drop = FALSE]^2)))
+  scores <- as.numeric(abs(Matrix::crossprod(x_basis[, candidate_penalized_cols, drop = FALSE], y_centered)))
+  norms <- sqrt(as.numeric(Matrix::colSums(x_basis[, candidate_penalized_cols, drop = FALSE]^2)))
   finite <- is.finite(scores) & is.finite(norms) & norms > 0
   scaled_scores <- rep(-Inf, length(scores))
   scaled_scores[finite] <- scores[finite] / norms[finite]
 
-  keep_penalized <- penalized_cols[order(scaled_scores, decreasing = TRUE)[seq_len(max_basis)]]
+  keep_penalized <- candidate_penalized_cols[order(scaled_scores, decreasing = TRUE)[seq_len(max_basis)]]
   sort(c(keep_penalized, unpenalized_cols))
+}
+
+extract_selected_lambda_type <- function(fit_control) {
+  if (isTRUE(fit_control$use_min)) "lambda.min" else "lambda.1se"
+}
+
+augment_screened_basis_for_gaussian_fit <- function(x_basis, y, screened_keep_cols,
+                                                    stage1_fit, lambda_type,
+                                                    refine_max_basis,
+                                                    penalty_factor,
+                                                    unpenalized_covariates = 0L) {
+  p_total <- ncol(x_basis)
+  penalized_cols <- seq_len(max(0L, p_total - unpenalized_covariates))
+  screened_penalized <- sort(screened_keep_cols[screened_keep_cols <= length(penalized_cols)])
+  omitted_penalized <- setdiff(penalized_cols, screened_penalized)
+
+  if (!length(omitted_penalized) || refine_max_basis <= 0L) {
+    return(sort(unique(screened_keep_cols)))
+  }
+
+  stage1_pred <- as.numeric(stats::predict(
+    stage1_fit,
+    newx = x_basis[, screened_keep_cols, drop = FALSE],
+    s = lambda_type,
+    type = "response"
+  ))
+  residual <- as.numeric(y - stage1_pred)
+
+  refine_keep_cols <- screen_basis_for_gaussian_fit(
+    x_basis = x_basis,
+    y = residual,
+    max_basis = min(as.integer(refine_max_basis), length(omitted_penalized)),
+    penalty_factor = penalty_factor,
+    unpenalized_covariates = unpenalized_covariates,
+    candidate_penalized_cols = omitted_penalized
+  )
+  refine_penalized <- refine_keep_cols[refine_keep_cols <= length(penalized_cols)]
+  sort(unique(c(screened_keep_cols, refine_penalized)))
+}
+
+refit_augmented_basis_at_selected_lambda <- function(fit_control, x_basis,
+                                                     penalty_factor, lambda_star,
+                                                     family, Y, offset, weights) {
+  fit_control$x <- x_basis
+  fit_control$y <- Y
+  fit_control$standardize <- FALSE
+  fit_control$family <- family
+  fit_control$lambda <- lambda_star
+  fit_control$penalty.factor <- penalty_factor
+  fit_control$offset <- offset
+  fit_control$weights <- weights
+  fit_control$cv_select <- NULL
+  fit_control$use_min <- NULL
+  do.call(glmnet::glmnet, fit_control)
 }
 
 compute_adaptive_gaussian_screen_target <- function(
@@ -303,7 +364,10 @@ fit_hal <- function(X,
                       approx_screen_n_multiplier = 0.35,
                       approx_screen_geom_multiplier = 0.6,
                       approx_screen_max_basis = 600L,
-                      approx_screen_min_basis = 250L
+                      approx_screen_min_basis = 250L,
+                      approx_refine_ratio = 0.2,
+                      approx_refine_max_basis = 80L,
+                      approx_refine_min_basis = 30L
                     ),
                     basis_list = NULL,
                     return_lasso = TRUE,
@@ -329,7 +393,10 @@ fit_hal <- function(X,
     approx_screen_n_multiplier = 0.35,
     approx_screen_geom_multiplier = 0.6,
     approx_screen_max_basis = 600L,
-    approx_screen_min_basis = 250L
+    approx_screen_min_basis = 250L,
+    approx_refine_ratio = 0.2,
+    approx_refine_max_basis = 80L,
+    approx_refine_min_basis = 30L
   )
   if (any(!names(defaults) %in% names(fit_control))) {
     fit_control <- c(
@@ -550,9 +617,14 @@ fit_hal <- function(X,
     used = FALSE,
     original_basis_count = ncol(x_basis),
     screened_basis_count = ncol(x_basis),
+    refine_basis_count = 0L,
+    final_basis_count = ncol(x_basis),
     auto_trigger_basis = NA_integer_,
     screen_target = ncol(x_basis)
   )
+  hal_lasso <- NULL
+  lambda_star <- NULL
+  coefs <- NULL
 
   if (should_use_approx_gaussian_backend(
     fam = fam,
@@ -573,23 +645,86 @@ fit_hal <- function(X,
     screen_target <- adaptive_screen$target
 
     if (screen_target < penalized_count) {
-      keep_cols <- screen_basis_for_gaussian_fit(
+      stage1_keep_cols <- screen_basis_for_gaussian_fit(
         x_basis = x_basis,
         y = Y,
         max_basis = screen_target,
         penalty_factor = penalty_factor,
         unpenalized_covariates = unpenalized_covariates
       )
+
+      stage1_fit_control <- fit_control
+      stage1_fit_control$x <- x_basis[, stage1_keep_cols, drop = FALSE]
+      stage1_fit_control$y <- Y
+      stage1_fit_control$standardize <- FALSE
+      stage1_fit_control$family <- family
+      stage1_fit_control$lambda <- lambda
+      stage1_fit_control$penalty.factor <- penalty_factor[stage1_keep_cols]
+      stage1_fit_control$offset <- offset
+      stage1_fit_control$weights <- weights
+      stage1_fit_control$approx_backend <- NULL
+      stage1_fit_control$approx_auto_min_basis <- NULL
+      stage1_fit_control$approx_auto_min_ratio <- NULL
+      stage1_fit_control$approx_auto_gap_ratio <- NULL
+      stage1_fit_control$approx_auto_min_excess <- NULL
+      stage1_fit_control$approx_screen_ratio <- NULL
+      stage1_fit_control$approx_screen_n_multiplier <- NULL
+      stage1_fit_control$approx_screen_geom_multiplier <- NULL
+      stage1_fit_control$approx_screen_max_basis <- NULL
+      stage1_fit_control$approx_screen_min_basis <- NULL
+      stage1_fit_control$approx_refine_ratio <- NULL
+      stage1_fit_control$approx_refine_max_basis <- NULL
+      stage1_fit_control$approx_refine_min_basis <- NULL
+      stage1_fit <- do.call(glmnet::cv.glmnet, stage1_fit_control)
+      lambda_type <- extract_selected_lambda_type(fit_control)
+      lambda_star <- if (identical(lambda_type, "lambda.min")) stage1_fit$lambda.min else stage1_fit$lambda.1se
+
+      approx_refine_ratio <- fit_control$approx_refine_ratio %||% 0.2
+      approx_refine_max_basis <- as.integer(fit_control$approx_refine_max_basis %||% 80L)
+      approx_refine_min_basis <- as.integer(fit_control$approx_refine_min_basis %||% 30L)
+      refine_target <- max(
+        approx_refine_min_basis,
+        min(approx_refine_max_basis, ceiling(screen_target * approx_refine_ratio))
+      )
+
+      keep_cols <- augment_screened_basis_for_gaussian_fit(
+        x_basis = x_basis,
+        y = Y,
+        screened_keep_cols = stage1_keep_cols,
+        stage1_fit = stage1_fit,
+        lambda_type = lambda_type,
+        refine_max_basis = refine_target,
+        penalty_factor = penalty_factor,
+        unpenalized_covariates = unpenalized_covariates
+      )
+      refine_penalized_count <- length(setdiff(
+        keep_cols[keep_cols <= penalized_count],
+        stage1_keep_cols[stage1_keep_cols <= penalized_count]
+      ))
+
       x_basis <- x_basis[, keep_cols, drop = FALSE]
       penalty_factor <- penalty_factor[keep_cols]
       penalized_keep <- keep_cols[keep_cols <= length(basis_list)]
       basis_list <- basis_list[penalized_keep]
       copy_map <- seq_along(basis_list)
       names(copy_map) <- seq_along(basis_list)
+      hal_lasso <- refit_augmented_basis_at_selected_lambda(
+        fit_control = fit_control,
+        x_basis = x_basis,
+        penalty_factor = penalty_factor,
+        lambda_star = lambda_star,
+        family = family,
+        Y = Y,
+        offset = offset,
+        weights = weights
+      )
+      coefs <- stats::coef(hal_lasso)
       approx_fit_meta <- list(
         used = TRUE,
         original_basis_count = penalized_count,
-        screened_basis_count = length(penalized_keep),
+        screened_basis_count = length(stage1_keep_cols[stage1_keep_cols <= penalized_count]),
+        refine_basis_count = refine_penalized_count,
+        final_basis_count = length(penalized_keep),
         auto_trigger_basis = adaptive_screen$trigger_basis,
         screen_target = screen_target
       )
@@ -598,6 +733,8 @@ fit_hal <- function(X,
         used = FALSE,
         original_basis_count = penalized_count,
         screened_basis_count = penalized_count,
+        refine_basis_count = 0L,
+        final_basis_count = penalized_count,
         auto_trigger_basis = adaptive_screen$trigger_basis,
         screen_target = penalized_count
       )
@@ -623,21 +760,26 @@ fit_hal <- function(X,
   fit_control$approx_screen_geom_multiplier <- NULL
   fit_control$approx_screen_max_basis <- NULL
   fit_control$approx_screen_min_basis <- NULL
+  fit_control$approx_refine_ratio <- NULL
+  fit_control$approx_refine_max_basis <- NULL
+  fit_control$approx_refine_min_basis <- NULL
 
-  if (!fit_control$cv_select) {
-    hal_lasso <- do.call(glmnet::glmnet, fit_control)
-    lambda_star <- hal_lasso$lambda
-    coefs <- stats::coef(hal_lasso)
-  } else {
-    hal_lasso <- do.call(glmnet::cv.glmnet, fit_control)
-    if (fit_control$use_min) {
-      lambda_type <- "lambda.min"
-      lambda_star <- hal_lasso$lambda.min
+  if (is.null(hal_lasso)) {
+    if (!fit_control$cv_select) {
+      hal_lasso <- do.call(glmnet::glmnet, fit_control)
+      lambda_star <- hal_lasso$lambda
+      coefs <- stats::coef(hal_lasso)
     } else {
-      lambda_type <- "lambda.1se"
-      lambda_star <- hal_lasso$lambda.1se
+      hal_lasso <- do.call(glmnet::cv.glmnet, fit_control)
+      if (fit_control$use_min) {
+        lambda_type <- "lambda.min"
+        lambda_star <- hal_lasso$lambda.min
+      } else {
+        lambda_type <- "lambda.1se"
+        lambda_star <- hal_lasso$lambda.1se
+      }
+      coefs <- stats::coef(hal_lasso, lambda_type)
     }
-    coefs <- stats::coef(hal_lasso, lambda_type)
   }
 
   # bookkeeping: get time for computation of the lasso regression
