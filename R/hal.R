@@ -240,6 +240,55 @@ augment_screened_basis_for_gaussian_fit <- function(x_basis, y, screened_keep_co
   sort(unique(c(screened_keep_cols, refine_penalized)))
 }
 
+compute_adaptive_refine_target <- function(fit_control,
+                                           screen_target,
+                                           penalized_count,
+                                           stage1_fit,
+                                           stage1_keep_cols,
+                                           lambda_type,
+                                           unpenalized_covariates = 0L) {
+  approx_refine_ratio <- fit_control$approx_refine_ratio %||% 0.2
+  approx_refine_max_basis <- as.integer(fit_control$approx_refine_max_basis %||% 80L)
+  approx_refine_min_basis <- as.integer(fit_control$approx_refine_min_basis %||% 30L)
+  approx_refine_hard_max_basis <- as.integer(fit_control$approx_refine_hard_max_basis %||% 160L)
+  approx_refine_dense_threshold <- fit_control$approx_refine_dense_threshold %||% 0.18
+  approx_refine_dense_multiplier <- fit_control$approx_refine_dense_multiplier %||% 2.0
+  approx_refine_compression_threshold <- fit_control$approx_refine_compression_threshold %||% 1.8
+  approx_refine_compression_multiplier <- fit_control$approx_refine_compression_multiplier %||% 1.5
+
+  base_target <- max(
+    approx_refine_min_basis,
+    min(approx_refine_max_basis, ceiling(screen_target * approx_refine_ratio))
+  )
+
+  penalized_stage1_cols <- stage1_keep_cols[stage1_keep_cols <= penalized_count]
+  stage1_coefs <- as.matrix(stats::coef(stage1_fit, s = lambda_type))
+  penalized_coefs <- stage1_coefs[-1, , drop = FALSE]
+  n_penalized_coef_rows <- max(0L, nrow(penalized_coefs) - unpenalized_covariates)
+  active_penalized <- if (n_penalized_coef_rows > 0L) {
+    sum(abs(penalized_coefs[seq_len(n_penalized_coef_rows), , drop = FALSE]) > 0)
+  } else {
+    0L
+  }
+  stage1_penalized_count <- max(1L, length(penalized_stage1_cols) - unpenalized_covariates)
+  active_density <- active_penalized / stage1_penalized_count
+  compression_ratio <- penalized_count / max(1L, screen_target)
+
+  adaptive_multiplier <- 1
+  if (is.finite(active_density) && active_density >= approx_refine_dense_threshold) {
+    adaptive_multiplier <- max(adaptive_multiplier, approx_refine_dense_multiplier)
+  }
+  if (is.finite(compression_ratio) && compression_ratio >= approx_refine_compression_threshold) {
+    adaptive_multiplier <- max(adaptive_multiplier, approx_refine_compression_multiplier)
+  }
+
+  min(
+    penalized_count,
+    approx_refine_hard_max_basis,
+    max(base_target, ceiling(base_target * adaptive_multiplier))
+  )
+}
+
 refit_augmented_basis_at_selected_lambda <- function(fit_control, x_basis,
                                                      penalty_factor, lambda_star,
                                                      family, Y, offset, weights) {
@@ -367,7 +416,12 @@ fit_hal <- function(X,
                       approx_screen_min_basis = 250L,
                       approx_refine_ratio = 0.2,
                       approx_refine_max_basis = 80L,
-                      approx_refine_min_basis = 30L
+                      approx_refine_min_basis = 30L,
+                      approx_refine_hard_max_basis = 160L,
+                      approx_refine_dense_threshold = 0.18,
+                      approx_refine_dense_multiplier = 2.0,
+                      approx_refine_compression_threshold = 1.8,
+                      approx_refine_compression_multiplier = 1.5
                     ),
                     basis_list = NULL,
                     return_lasso = TRUE,
@@ -396,7 +450,12 @@ fit_hal <- function(X,
     approx_screen_min_basis = 250L,
     approx_refine_ratio = 0.2,
     approx_refine_max_basis = 80L,
-    approx_refine_min_basis = 30L
+    approx_refine_min_basis = 30L,
+    approx_refine_hard_max_basis = 160L,
+    approx_refine_dense_threshold = 0.18,
+    approx_refine_dense_multiplier = 2.0,
+    approx_refine_compression_threshold = 1.8,
+    approx_refine_compression_multiplier = 1.5
   )
   if (any(!names(defaults) %in% names(fit_control))) {
     fit_control <- c(
@@ -675,16 +734,23 @@ fit_hal <- function(X,
       stage1_fit_control$approx_refine_ratio <- NULL
       stage1_fit_control$approx_refine_max_basis <- NULL
       stage1_fit_control$approx_refine_min_basis <- NULL
+      stage1_fit_control$approx_refine_hard_max_basis <- NULL
+      stage1_fit_control$approx_refine_dense_threshold <- NULL
+      stage1_fit_control$approx_refine_dense_multiplier <- NULL
+      stage1_fit_control$approx_refine_compression_threshold <- NULL
+      stage1_fit_control$approx_refine_compression_multiplier <- NULL
       stage1_fit <- do.call(glmnet::cv.glmnet, stage1_fit_control)
       lambda_type <- extract_selected_lambda_type(fit_control)
       lambda_star <- if (identical(lambda_type, "lambda.min")) stage1_fit$lambda.min else stage1_fit$lambda.1se
 
-      approx_refine_ratio <- fit_control$approx_refine_ratio %||% 0.2
-      approx_refine_max_basis <- as.integer(fit_control$approx_refine_max_basis %||% 80L)
-      approx_refine_min_basis <- as.integer(fit_control$approx_refine_min_basis %||% 30L)
-      refine_target <- max(
-        approx_refine_min_basis,
-        min(approx_refine_max_basis, ceiling(screen_target * approx_refine_ratio))
+      refine_target <- compute_adaptive_refine_target(
+        fit_control = fit_control,
+        screen_target = screen_target,
+        penalized_count = penalized_count,
+        stage1_fit = stage1_fit,
+        stage1_keep_cols = stage1_keep_cols,
+        lambda_type = lambda_type,
+        unpenalized_covariates = unpenalized_covariates
       )
 
       keep_cols <- augment_screened_basis_for_gaussian_fit(
@@ -763,6 +829,11 @@ fit_hal <- function(X,
   fit_control$approx_refine_ratio <- NULL
   fit_control$approx_refine_max_basis <- NULL
   fit_control$approx_refine_min_basis <- NULL
+  fit_control$approx_refine_hard_max_basis <- NULL
+  fit_control$approx_refine_dense_threshold <- NULL
+  fit_control$approx_refine_dense_multiplier <- NULL
+  fit_control$approx_refine_compression_threshold <- NULL
+  fit_control$approx_refine_compression_multiplier <- NULL
 
   if (is.null(hal_lasso)) {
     if (!fit_control$cv_select) {
