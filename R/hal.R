@@ -309,6 +309,7 @@ compute_adaptive_gaussian_screen_target <- function(
   x_basis,
   basis_list,
   fit_control,
+  feature_count,
   unpenalized_covariates = 0L
 ) {
   penalized_count <- length(basis_list)
@@ -326,7 +327,31 @@ compute_adaptive_gaussian_screen_target <- function(
     ceiling(n_obs * approx_screen_n_multiplier),
     ceiling(sqrt(n_obs * penalized_count) * approx_screen_geom_multiplier)
   )
-  adaptive_target <- min(approx_screen_max_basis, adaptive_target)
+
+  approx_lowdim_p_threshold <- as.integer(fit_control$approx_lowdim_p_threshold %||% 8L)
+  approx_lowdim_basis_per_feature_threshold <- fit_control$approx_lowdim_basis_per_feature_threshold %||% 180
+  approx_lowdim_screen_ratio <- fit_control$approx_lowdim_screen_ratio %||% 0.45
+  approx_lowdim_screen_n_multiplier <- fit_control$approx_lowdim_screen_n_multiplier %||% 0.8
+  approx_lowdim_screen_geom_multiplier <- fit_control$approx_lowdim_screen_geom_multiplier %||% 1.1
+  approx_lowdim_screen_max_basis <- as.integer(fit_control$approx_lowdim_screen_max_basis %||% 1200L)
+
+  basis_per_feature <- penalized_count / max(1L, feature_count)
+  structure_aware_mode <- feature_count <= approx_lowdim_p_threshold &&
+    is.finite(basis_per_feature) &&
+    basis_per_feature >= approx_lowdim_basis_per_feature_threshold
+
+  if (structure_aware_mode) {
+    structure_aware_target <- max(
+      approx_screen_min_basis,
+      ceiling(penalized_count * approx_lowdim_screen_ratio),
+      ceiling(n_obs * approx_lowdim_screen_n_multiplier),
+      ceiling(sqrt(n_obs * penalized_count) * approx_lowdim_screen_geom_multiplier)
+    )
+    adaptive_target <- max(adaptive_target, structure_aware_target)
+    adaptive_target <- min(approx_lowdim_screen_max_basis, adaptive_target)
+  } else {
+    adaptive_target <- min(approx_screen_max_basis, adaptive_target)
+  }
   adaptive_target <- min(penalized_count, adaptive_target)
 
   auto_min_basis <- as.integer(fit_control$approx_auto_min_basis %||% 600L)
@@ -344,7 +369,8 @@ compute_adaptive_gaussian_screen_target <- function(
 }
 
 should_use_approx_gaussian_backend <- function(fam, fit_control, lambda, weights,
-                                               offset, x_basis, basis_list) {
+                                               offset, x_basis, basis_list,
+                                               feature_count) {
   approx_mode <- fit_control$approx_backend
   if (is.null(approx_mode)) {
     approx_mode <- "auto"
@@ -373,7 +399,8 @@ should_use_approx_gaussian_backend <- function(fam, fit_control, lambda, weights
   adaptive_screen <- compute_adaptive_gaussian_screen_target(
     x_basis = x_basis,
     basis_list = basis_list,
-    fit_control = fit_control
+    fit_control = fit_control,
+    feature_count = feature_count
   )
   adaptive_screen$use
 }
@@ -414,6 +441,12 @@ fit_hal <- function(X,
                       approx_screen_geom_multiplier = 0.6,
                       approx_screen_max_basis = 600L,
                       approx_screen_min_basis = 250L,
+                      approx_lowdim_p_threshold = 8L,
+                      approx_lowdim_basis_per_feature_threshold = 180,
+                      approx_lowdim_screen_ratio = 0.45,
+                      approx_lowdim_screen_n_multiplier = 0.8,
+                      approx_lowdim_screen_geom_multiplier = 1.1,
+                      approx_lowdim_screen_max_basis = 1200L,
                       approx_refine_ratio = 0.2,
                       approx_refine_max_basis = 80L,
                       approx_refine_min_basis = 30L,
@@ -448,6 +481,12 @@ fit_hal <- function(X,
     approx_screen_geom_multiplier = 0.6,
     approx_screen_max_basis = 600L,
     approx_screen_min_basis = 250L,
+    approx_lowdim_p_threshold = 8L,
+    approx_lowdim_basis_per_feature_threshold = 180,
+    approx_lowdim_screen_ratio = 0.45,
+    approx_lowdim_screen_n_multiplier = 0.8,
+    approx_lowdim_screen_geom_multiplier = 1.1,
+    approx_lowdim_screen_max_basis = 1200L,
     approx_refine_ratio = 0.2,
     approx_refine_max_basis = 80L,
     approx_refine_min_basis = 30L,
@@ -692,13 +731,15 @@ fit_hal <- function(X,
     weights = weights,
     offset = offset,
     x_basis = x_basis,
-    basis_list = basis_list
+    basis_list = basis_list,
+    feature_count = ncol(X)
   )) {
     penalized_count <- length(basis_list)
     adaptive_screen <- compute_adaptive_gaussian_screen_target(
       x_basis = x_basis,
       basis_list = basis_list,
       fit_control = fit_control,
+      feature_count = ncol(X),
       unpenalized_covariates = unpenalized_covariates
     )
     screen_target <- adaptive_screen$target
@@ -731,6 +772,12 @@ fit_hal <- function(X,
       stage1_fit_control$approx_screen_geom_multiplier <- NULL
       stage1_fit_control$approx_screen_max_basis <- NULL
       stage1_fit_control$approx_screen_min_basis <- NULL
+      stage1_fit_control$approx_lowdim_p_threshold <- NULL
+      stage1_fit_control$approx_lowdim_basis_per_feature_threshold <- NULL
+      stage1_fit_control$approx_lowdim_screen_ratio <- NULL
+      stage1_fit_control$approx_lowdim_screen_n_multiplier <- NULL
+      stage1_fit_control$approx_lowdim_screen_geom_multiplier <- NULL
+      stage1_fit_control$approx_lowdim_screen_max_basis <- NULL
       stage1_fit_control$approx_refine_ratio <- NULL
       stage1_fit_control$approx_refine_max_basis <- NULL
       stage1_fit_control$approx_refine_min_basis <- NULL
@@ -826,6 +873,12 @@ fit_hal <- function(X,
   fit_control$approx_screen_geom_multiplier <- NULL
   fit_control$approx_screen_max_basis <- NULL
   fit_control$approx_screen_min_basis <- NULL
+  fit_control$approx_lowdim_p_threshold <- NULL
+  fit_control$approx_lowdim_basis_per_feature_threshold <- NULL
+  fit_control$approx_lowdim_screen_ratio <- NULL
+  fit_control$approx_lowdim_screen_n_multiplier <- NULL
+  fit_control$approx_lowdim_screen_geom_multiplier <- NULL
+  fit_control$approx_lowdim_screen_max_basis <- NULL
   fit_control$approx_refine_ratio <- NULL
   fit_control$approx_refine_max_basis <- NULL
   fit_control$approx_refine_min_basis <- NULL
