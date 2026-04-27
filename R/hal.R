@@ -170,9 +170,47 @@
 #' y <- rbinom(n = n, size = 1, prob = y_prob)
 #' hal_fit <- fit_hal(X = x, Y = y, family = "binomial")
 #' preds <- predict(hal_fit, new_data = x)
+score_gaussian_screen_candidates <- function(x_basis, y, candidate_penalized_cols) {
+  y_centered <- as.numeric(y - mean(y))
+  scores <- as.numeric(abs(Matrix::crossprod(x_basis[, candidate_penalized_cols, drop = FALSE], y_centered)))
+  norms <- sqrt(as.numeric(Matrix::colSums(x_basis[, candidate_penalized_cols, drop = FALSE]^2)))
+  finite <- is.finite(scores) & is.finite(norms) & norms > 0
+  scaled_scores <- rep(-Inf, length(scores))
+  scaled_scores[finite] <- scores[finite] / norms[finite]
+  scaled_scores
+}
+
+compute_linear_screen_residual <- function(raw_x, y) {
+  if (is.null(raw_x)) {
+    return(NULL)
+  }
+
+  raw_mat <- tryCatch(as.matrix(raw_x), error = function(...) NULL)
+  if (is.null(raw_mat) || !nrow(raw_mat) || !ncol(raw_mat)) {
+    return(NULL)
+  }
+
+  finite_col <- apply(raw_mat, 2L, function(col) all(is.finite(col)))
+  if (!all(finite_col)) {
+    raw_mat <- raw_mat[, finite_col, drop = FALSE]
+  }
+  if (!ncol(raw_mat)) {
+    return(NULL)
+  }
+
+  fit <- tryCatch(stats::lm.fit(x = cbind(`(Intercept)` = 1, raw_mat), y = y), error = function(...) NULL)
+  if (is.null(fit) || is.null(fit$residuals)) {
+    return(NULL)
+  }
+
+  as.numeric(fit$residuals)
+}
+
 screen_basis_for_gaussian_fit <- function(x_basis, y, max_basis, penalty_factor,
                                           unpenalized_covariates = 0L,
-                                          candidate_penalized_cols = NULL) {
+                                          candidate_penalized_cols = NULL,
+                                          raw_x = NULL,
+                                          fit_control = list()) {
   p_total <- ncol(x_basis)
   penalized_cols <- seq_len(max(0L, p_total - unpenalized_covariates))
   unpenalized_cols <- if (unpenalized_covariates > 0L) {
@@ -191,14 +229,38 @@ screen_basis_for_gaussian_fit <- function(x_basis, y, max_basis, penalty_factor,
     return(sort(c(candidate_penalized_cols, unpenalized_cols)))
   }
 
-  y_centered <- as.numeric(y - mean(y))
-  scores <- as.numeric(abs(Matrix::crossprod(x_basis[, candidate_penalized_cols, drop = FALSE], y_centered)))
-  norms <- sqrt(as.numeric(Matrix::colSums(x_basis[, candidate_penalized_cols, drop = FALSE]^2)))
-  finite <- is.finite(scores) & is.finite(norms) & norms > 0
-  scaled_scores <- rep(-Inf, length(scores))
-  scaled_scores[finite] <- scores[finite] / norms[finite]
+  primary_scores <- score_gaussian_screen_candidates(x_basis, y, candidate_penalized_cols)
+  primary_ranked <- candidate_penalized_cols[order(primary_scores, decreasing = TRUE)]
 
-  keep_penalized <- candidate_penalized_cols[order(scaled_scores, decreasing = TRUE)[seq_len(max_basis)]]
+  approx_linear_residual_screen <- fit_control$approx_linear_residual_screen %||% TRUE
+  approx_linear_residual_ratio <- fit_control$approx_linear_residual_ratio %||% 0.35
+  approx_linear_residual_min_basis <- as.integer(fit_control$approx_linear_residual_min_basis %||% 60L)
+
+  keep_penalized <- primary_ranked[seq_len(max_basis)]
+
+  if (isTRUE(approx_linear_residual_screen) && !is.null(raw_x)) {
+    residual_y <- compute_linear_screen_residual(raw_x = raw_x, y = y)
+    if (!is.null(residual_y)) {
+      residual_scores <- score_gaussian_screen_candidates(x_basis, residual_y, candidate_penalized_cols)
+      residual_ranked <- candidate_penalized_cols[order(residual_scores, decreasing = TRUE)]
+      residual_budget <- min(
+        length(candidate_penalized_cols),
+        max_basis,
+        max(approx_linear_residual_min_basis, ceiling(max_basis * approx_linear_residual_ratio))
+      )
+      residual_keep <- residual_ranked[seq_len(residual_budget)]
+      keep_penalized <- unique(c(
+        primary_ranked[seq_len(max(1L, max_basis - residual_budget))],
+        residual_keep
+      ))
+      if (length(keep_penalized) < max_basis) {
+        fill_cols <- setdiff(primary_ranked, keep_penalized)
+        keep_penalized <- c(keep_penalized, fill_cols[seq_len(min(length(fill_cols), max_basis - length(keep_penalized)))])
+      }
+      keep_penalized <- keep_penalized[seq_len(min(length(keep_penalized), max_basis))]
+    }
+  }
+
   sort(c(keep_penalized, unpenalized_cols))
 }
 
@@ -454,7 +516,10 @@ fit_hal <- function(X,
                       approx_refine_dense_threshold = 0.18,
                       approx_refine_dense_multiplier = 2.0,
                       approx_refine_compression_threshold = 1.8,
-                      approx_refine_compression_multiplier = 1.5
+                      approx_refine_compression_multiplier = 1.5,
+                      approx_linear_residual_screen = TRUE,
+                      approx_linear_residual_ratio = 0.35,
+                      approx_linear_residual_min_basis = 60L
                     ),
                     basis_list = NULL,
                     return_lasso = TRUE,
@@ -494,7 +559,10 @@ fit_hal <- function(X,
     approx_refine_dense_threshold = 0.18,
     approx_refine_dense_multiplier = 2.0,
     approx_refine_compression_threshold = 1.8,
-    approx_refine_compression_multiplier = 1.5
+    approx_refine_compression_multiplier = 1.5,
+    approx_linear_residual_screen = TRUE,
+    approx_linear_residual_ratio = 0.35,
+    approx_linear_residual_min_basis = 60L
   )
   if (any(!names(defaults) %in% names(fit_control))) {
     fit_control <- c(
@@ -750,7 +818,9 @@ fit_hal <- function(X,
         y = Y,
         max_basis = screen_target,
         penalty_factor = penalty_factor,
-        unpenalized_covariates = unpenalized_covariates
+        unpenalized_covariates = unpenalized_covariates,
+        raw_x = X,
+        fit_control = fit_control
       )
 
       stage1_fit_control <- fit_control
@@ -786,6 +856,9 @@ fit_hal <- function(X,
       stage1_fit_control$approx_refine_dense_multiplier <- NULL
       stage1_fit_control$approx_refine_compression_threshold <- NULL
       stage1_fit_control$approx_refine_compression_multiplier <- NULL
+      stage1_fit_control$approx_linear_residual_screen <- NULL
+      stage1_fit_control$approx_linear_residual_ratio <- NULL
+      stage1_fit_control$approx_linear_residual_min_basis <- NULL
       stage1_fit <- do.call(glmnet::cv.glmnet, stage1_fit_control)
       lambda_type <- extract_selected_lambda_type(fit_control)
       lambda_star <- if (identical(lambda_type, "lambda.min")) stage1_fit$lambda.min else stage1_fit$lambda.1se
@@ -887,6 +960,9 @@ fit_hal <- function(X,
   fit_control$approx_refine_dense_multiplier <- NULL
   fit_control$approx_refine_compression_threshold <- NULL
   fit_control$approx_refine_compression_multiplier <- NULL
+  fit_control$approx_linear_residual_screen <- NULL
+  fit_control$approx_linear_residual_ratio <- NULL
+  fit_control$approx_linear_residual_min_basis <- NULL
 
   if (is.null(hal_lasso)) {
     if (!fit_control$cv_select) {
