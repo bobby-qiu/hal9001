@@ -427,7 +427,15 @@ compute_adaptive_gaussian_screen_target <- function(
     adaptive_target + auto_min_excess
   )
 
-  list(use = penalized_count >= auto_trigger_basis, target = adaptive_target, trigger_basis = auto_trigger_basis)
+  list(
+    use = penalized_count >= auto_trigger_basis,
+    target = adaptive_target,
+    trigger_basis = auto_trigger_basis,
+    n_obs = n_obs,
+    penalized_count = penalized_count,
+    basis_per_feature = basis_per_feature,
+    structure_aware_mode = structure_aware_mode
+  )
 }
 
 should_use_approx_gaussian_backend <- function(fam, fit_control, lambda, weights,
@@ -464,6 +472,21 @@ should_use_approx_gaussian_backend <- function(fam, fit_control, lambda, weights
     fit_control = fit_control,
     feature_count = feature_count
   )
+
+  approx_selective_regime <- fit_control$approx_selective_regime %||% TRUE
+  approx_selective_min_n <- as.integer(fit_control$approx_selective_min_n %||% 350L)
+  approx_selective_max_p <- as.integer(fit_control$approx_selective_max_p %||% 8L)
+  approx_selective_min_basis <- as.integer(fit_control$approx_selective_min_basis %||% 650L)
+
+  if (isTRUE(approx_selective_regime)) {
+    selective_ok <- adaptive_screen$n_obs >= approx_selective_min_n &&
+      feature_count <= approx_selective_max_p &&
+      adaptive_screen$penalized_count >= approx_selective_min_basis
+    if (!selective_ok) {
+      return(FALSE)
+    }
+  }
+
   adaptive_screen$use
 }
 
@@ -519,7 +542,11 @@ fit_hal <- function(X,
                       approx_refine_compression_multiplier = 1.5,
                       approx_linear_residual_screen = TRUE,
                       approx_linear_residual_ratio = 0.35,
-                      approx_linear_residual_min_basis = 60L
+                      approx_linear_residual_min_basis = 60L,
+                      approx_selective_regime = TRUE,
+                      approx_selective_min_n = 350L,
+                      approx_selective_max_p = 8L,
+                      approx_selective_min_basis = 650L
                     ),
                     basis_list = NULL,
                     return_lasso = TRUE,
@@ -562,7 +589,11 @@ fit_hal <- function(X,
     approx_refine_compression_multiplier = 1.5,
     approx_linear_residual_screen = TRUE,
     approx_linear_residual_ratio = 0.35,
-    approx_linear_residual_min_basis = 60L
+    approx_linear_residual_min_basis = 60L,
+    approx_selective_regime = TRUE,
+    approx_selective_min_n = 350L,
+    approx_selective_max_p = 8L,
+    approx_selective_min_basis = 650L
   )
   if (any(!names(defaults) %in% names(fit_control))) {
     fit_control <- c(
@@ -859,6 +890,10 @@ fit_hal <- function(X,
       stage1_fit_control$approx_linear_residual_screen <- NULL
       stage1_fit_control$approx_linear_residual_ratio <- NULL
       stage1_fit_control$approx_linear_residual_min_basis <- NULL
+      stage1_fit_control$approx_selective_regime <- NULL
+      stage1_fit_control$approx_selective_min_n <- NULL
+      stage1_fit_control$approx_selective_max_p <- NULL
+      stage1_fit_control$approx_selective_min_basis <- NULL
       stage1_fit <- do.call(glmnet::cv.glmnet, stage1_fit_control)
       lambda_type <- extract_selected_lambda_type(fit_control)
       lambda_star <- if (identical(lambda_type, "lambda.min")) stage1_fit$lambda.min else stage1_fit$lambda.1se
@@ -963,6 +998,10 @@ fit_hal <- function(X,
   fit_control$approx_linear_residual_screen <- NULL
   fit_control$approx_linear_residual_ratio <- NULL
   fit_control$approx_linear_residual_min_basis <- NULL
+  fit_control$approx_selective_regime <- NULL
+  fit_control$approx_selective_min_n <- NULL
+  fit_control$approx_selective_max_p <- NULL
+  fit_control$approx_selective_min_basis <- NULL
 
   if (is.null(hal_lasso)) {
     if (!fit_control$cv_select) {
