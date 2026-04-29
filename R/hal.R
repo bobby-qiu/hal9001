@@ -351,20 +351,61 @@ compute_adaptive_refine_target <- function(fit_control,
   )
 }
 
-refit_augmented_basis_at_selected_lambda <- function(fit_control, x_basis,
-                                                     penalty_factor, lambda_star,
-                                                     family, Y, offset, weights) {
+build_local_lambda_refine_sequence <- function(stage1_fit, lambda_star, fit_control) {
+  approx_local_refine <- fit_control$approx_local_refine %||% TRUE
+  approx_local_refine_lambda_count <- as.integer(fit_control$approx_local_refine_lambda_count %||% 15L)
+
+  if (!isTRUE(approx_local_refine)) {
+    return(lambda_star)
+  }
+
+  lambda_path <- stage1_fit$lambda
+  if (is.null(lambda_path) || !length(lambda_path)) {
+    return(lambda_star)
+  }
+
+  lambda_count <- max(3L, min(length(lambda_path), approx_local_refine_lambda_count))
+  center_idx <- which.min(abs(log(lambda_path) - log(lambda_star)))
+  left <- max(1L, center_idx - floor((lambda_count - 1L) / 2L))
+  right <- min(length(lambda_path), left + lambda_count - 1L)
+  left <- max(1L, right - lambda_count + 1L)
+  unique(lambda_path[seq.int(left, right)])
+}
+
+refit_augmented_basis_with_local_lambda_path <- function(fit_control, x_basis,
+                                                         penalty_factor, lambda_star,
+                                                         family, Y, offset, weights,
+                                                         stage1_fit) {
+  lambda_sequence <- build_local_lambda_refine_sequence(
+    stage1_fit = stage1_fit,
+    lambda_star = lambda_star,
+    fit_control = fit_control
+  )
+
   fit_control$x <- x_basis
   fit_control$y <- Y
   fit_control$standardize <- FALSE
   fit_control$family <- family
-  fit_control$lambda <- lambda_star
+  fit_control$lambda <- lambda_sequence
   fit_control$penalty.factor <- penalty_factor
   fit_control$offset <- offset
   fit_control$weights <- weights
-  fit_control$cv_select <- NULL
-  fit_control$use_min <- NULL
-  do.call(glmnet::glmnet, fit_control)
+
+  if (length(lambda_sequence) <= 1L) {
+    fit_control$cv_select <- NULL
+    fit_control$use_min <- NULL
+    fit <- do.call(glmnet::glmnet, fit_control)
+    return(list(fit = fit, lambda_star = lambda_sequence[[1]], local_lambda_count = 1L))
+  }
+
+  fit <- do.call(glmnet::cv.glmnet, fit_control)
+  lambda_type <- extract_selected_lambda_type(fit_control)
+  lambda_star_refined <- if (identical(lambda_type, "lambda.min")) fit$lambda.min else fit$lambda.1se
+  list(
+    fit = fit,
+    lambda_star = lambda_star_refined,
+    local_lambda_count = length(lambda_sequence)
+  )
 }
 
 compute_adaptive_gaussian_screen_target <- function(
@@ -546,7 +587,9 @@ fit_hal <- function(X,
                       approx_selective_regime = TRUE,
                       approx_selective_min_n = 350L,
                       approx_selective_max_p = 8L,
-                      approx_selective_min_basis = 650L
+                      approx_selective_min_basis = 650L,
+                      approx_local_refine = TRUE,
+                      approx_local_refine_lambda_count = 15L
                     ),
                     basis_list = NULL,
                     return_lasso = TRUE,
@@ -593,7 +636,9 @@ fit_hal <- function(X,
     approx_selective_regime = TRUE,
     approx_selective_min_n = 350L,
     approx_selective_max_p = 8L,
-    approx_selective_min_basis = 650L
+    approx_selective_min_basis = 650L,
+    approx_local_refine = TRUE,
+    approx_local_refine_lambda_count = 15L
   )
   if (any(!names(defaults) %in% names(fit_control))) {
     fit_control <- c(
@@ -894,6 +939,8 @@ fit_hal <- function(X,
       stage1_fit_control$approx_selective_min_n <- NULL
       stage1_fit_control$approx_selective_max_p <- NULL
       stage1_fit_control$approx_selective_min_basis <- NULL
+      stage1_fit_control$approx_local_refine <- NULL
+      stage1_fit_control$approx_local_refine_lambda_count <- NULL
       stage1_fit <- do.call(glmnet::cv.glmnet, stage1_fit_control)
       lambda_type <- extract_selected_lambda_type(fit_control)
       lambda_star <- if (identical(lambda_type, "lambda.min")) stage1_fit$lambda.min else stage1_fit$lambda.1se
@@ -929,7 +976,7 @@ fit_hal <- function(X,
       basis_list <- basis_list[penalized_keep]
       copy_map <- seq_along(basis_list)
       names(copy_map) <- seq_along(basis_list)
-      hal_lasso <- refit_augmented_basis_at_selected_lambda(
+      refined_fit <- refit_augmented_basis_with_local_lambda_path(
         fit_control = fit_control,
         x_basis = x_basis,
         penalty_factor = penalty_factor,
@@ -937,9 +984,16 @@ fit_hal <- function(X,
         family = family,
         Y = Y,
         offset = offset,
-        weights = weights
+        weights = weights,
+        stage1_fit = stage1_fit
       )
-      coefs <- stats::coef(hal_lasso)
+      hal_lasso <- refined_fit$fit
+      lambda_star <- refined_fit$lambda_star
+      if (fit_control$cv_select && length(refined_fit$lambda_star) == 1L && inherits(hal_lasso, "cv.glmnet")) {
+        coefs <- stats::coef(hal_lasso, extract_selected_lambda_type(fit_control))
+      } else {
+        coefs <- stats::coef(hal_lasso)
+      }
       approx_fit_meta <- list(
         used = TRUE,
         original_basis_count = penalized_count,
@@ -947,7 +1001,8 @@ fit_hal <- function(X,
         refine_basis_count = refine_penalized_count,
         final_basis_count = length(penalized_keep),
         auto_trigger_basis = adaptive_screen$trigger_basis,
-        screen_target = screen_target
+        screen_target = screen_target,
+        local_lambda_count = refined_fit$local_lambda_count
       )
     } else {
       approx_fit_meta <- list(
@@ -957,7 +1012,8 @@ fit_hal <- function(X,
         refine_basis_count = 0L,
         final_basis_count = penalized_count,
         auto_trigger_basis = adaptive_screen$trigger_basis,
-        screen_target = penalized_count
+        screen_target = penalized_count,
+        local_lambda_count = 0L
       )
     }
   }
@@ -1002,6 +1058,8 @@ fit_hal <- function(X,
   fit_control$approx_selective_min_n <- NULL
   fit_control$approx_selective_max_p <- NULL
   fit_control$approx_selective_min_basis <- NULL
+  fit_control$approx_local_refine <- NULL
+  fit_control$approx_local_refine_lambda_count <- NULL
 
   if (is.null(hal_lasso)) {
     if (!fit_control$cv_select) {
