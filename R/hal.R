@@ -323,6 +323,15 @@ resolve_approx_stage_target_nfolds <- function(fit_control,
         stage2 = as.integer(fit_control$approx_stage2_wide_nfolds %||% 7L)
       )
     )
+  } else if (!is.null(adaptive_screen) && isTRUE(adaptive_screen$moderate_p_mode)) {
+    target_nfolds <- max(
+      target_nfolds,
+      switch(
+        stage,
+        stage1 = as.integer(fit_control$approx_stage1_moderate_nfolds %||% 8L),
+        stage2 = as.integer(fit_control$approx_stage2_moderate_nfolds %||% 6L)
+      )
+    )
   }
 
   min(original_nfolds, target_nfolds)
@@ -526,11 +535,21 @@ compute_adaptive_gaussian_screen_target <- function(
   approx_lowdim_screen_n_multiplier <- fit_control$approx_lowdim_screen_n_multiplier %||% 0.8
   approx_lowdim_screen_geom_multiplier <- fit_control$approx_lowdim_screen_geom_multiplier %||% 1.1
   approx_lowdim_screen_max_basis <- as.integer(fit_control$approx_lowdim_screen_max_basis %||% 1200L)
+  approx_moderate_p_threshold <- as.integer(fit_control$approx_moderate_p_threshold %||% 12L)
+  approx_moderate_basis_per_feature_threshold <- fit_control$approx_moderate_basis_per_feature_threshold %||% 120
+  approx_moderate_screen_ratio <- fit_control$approx_moderate_screen_ratio %||% 0.3
+  approx_moderate_screen_n_multiplier <- fit_control$approx_moderate_screen_n_multiplier %||% 0.5
+  approx_moderate_screen_geom_multiplier <- fit_control$approx_moderate_screen_geom_multiplier %||% 0.75
+  approx_moderate_screen_max_basis <- as.integer(fit_control$approx_moderate_screen_max_basis %||% 900L)
 
   basis_per_feature <- penalized_count / max(1L, feature_count)
   structure_aware_mode <- feature_count <= approx_lowdim_p_threshold &&
     is.finite(basis_per_feature) &&
     basis_per_feature >= approx_lowdim_basis_per_feature_threshold
+  moderate_p_mode <- !structure_aware_mode &&
+    feature_count <= approx_moderate_p_threshold &&
+    is.finite(basis_per_feature) &&
+    basis_per_feature >= approx_moderate_basis_per_feature_threshold
 
   if (structure_aware_mode) {
     structure_aware_target <- max(
@@ -541,6 +560,15 @@ compute_adaptive_gaussian_screen_target <- function(
     )
     adaptive_target <- max(adaptive_target, structure_aware_target)
     adaptive_target <- min(approx_lowdim_screen_max_basis, adaptive_target)
+  } else if (moderate_p_mode) {
+    moderate_p_target <- max(
+      approx_screen_min_basis,
+      ceiling(penalized_count * approx_moderate_screen_ratio),
+      ceiling(n_obs * approx_moderate_screen_n_multiplier),
+      ceiling(sqrt(n_obs * penalized_count) * approx_moderate_screen_geom_multiplier)
+    )
+    adaptive_target <- max(adaptive_target, moderate_p_target)
+    adaptive_target <- min(approx_moderate_screen_max_basis, adaptive_target)
   } else {
     adaptive_target <- min(approx_screen_max_basis, adaptive_target)
   }
@@ -564,7 +592,8 @@ compute_adaptive_gaussian_screen_target <- function(
     n_obs = n_obs,
     penalized_count = penalized_count,
     basis_per_feature = basis_per_feature,
-    structure_aware_mode = structure_aware_mode
+    structure_aware_mode = structure_aware_mode,
+    moderate_p_mode = moderate_p_mode
   )
 }
 
@@ -607,11 +636,19 @@ should_use_approx_gaussian_backend <- function(fam, fit_control, lambda, weights
   approx_selective_min_n <- as.integer(fit_control$approx_selective_min_n %||% 350L)
   approx_selective_max_p <- as.integer(fit_control$approx_selective_max_p %||% 8L)
   approx_selective_min_basis <- as.integer(fit_control$approx_selective_min_basis %||% 650L)
+  approx_selective_moderate_min_n <- as.integer(fit_control$approx_selective_moderate_min_n %||% 700L)
+  approx_selective_moderate_max_p <- as.integer(fit_control$approx_selective_moderate_max_p %||% 12L)
+  approx_selective_moderate_min_basis <- as.integer(fit_control$approx_selective_moderate_min_basis %||% 1000L)
 
   if (isTRUE(approx_selective_regime)) {
-    selective_ok <- adaptive_screen$n_obs >= approx_selective_min_n &&
+    lowdim_ok <- adaptive_screen$n_obs >= approx_selective_min_n &&
       feature_count <= approx_selective_max_p &&
       adaptive_screen$penalized_count >= approx_selective_min_basis
+    moderate_ok <- isTRUE(adaptive_screen$moderate_p_mode) &&
+      adaptive_screen$n_obs >= approx_selective_moderate_min_n &&
+      feature_count <= approx_selective_moderate_max_p &&
+      adaptive_screen$penalized_count >= approx_selective_moderate_min_basis
+    selective_ok <- lowdim_ok || moderate_ok
     if (!selective_ok) {
       return(FALSE)
     }
@@ -662,6 +699,12 @@ fit_hal <- function(X,
                       approx_lowdim_screen_n_multiplier = 0.8,
                       approx_lowdim_screen_geom_multiplier = 1.1,
                       approx_lowdim_screen_max_basis = 1200L,
+                      approx_moderate_p_threshold = 12L,
+                      approx_moderate_basis_per_feature_threshold = 120,
+                      approx_moderate_screen_ratio = 0.3,
+                      approx_moderate_screen_n_multiplier = 0.5,
+                      approx_moderate_screen_geom_multiplier = 0.75,
+                      approx_moderate_screen_max_basis = 900L,
                       approx_refine_ratio = 0.2,
                       approx_refine_max_basis = 80L,
                       approx_refine_min_basis = 30L,
@@ -677,13 +720,18 @@ fit_hal <- function(X,
                       approx_selective_min_n = 350L,
                       approx_selective_max_p = 8L,
                       approx_selective_min_basis = 650L,
+                      approx_selective_moderate_min_n = 700L,
+                      approx_selective_moderate_max_p = 12L,
+                      approx_selective_moderate_min_basis = 1000L,
                       approx_local_refine = TRUE,
                       approx_local_refine_lambda_count = 15L,
                       approx_cv_fold_compress = TRUE,
                       approx_stage1_nfolds = 7L,
                       approx_stage2_nfolds = 5L,
                       approx_stage1_wide_nfolds = 8L,
-                      approx_stage2_wide_nfolds = 7L
+                      approx_stage2_wide_nfolds = 7L,
+                      approx_stage1_moderate_nfolds = 8L,
+                      approx_stage2_moderate_nfolds = 6L
                     ),
                     basis_list = NULL,
                     return_lasso = TRUE,
@@ -716,6 +764,12 @@ fit_hal <- function(X,
     approx_lowdim_screen_n_multiplier = 0.8,
     approx_lowdim_screen_geom_multiplier = 1.1,
     approx_lowdim_screen_max_basis = 1200L,
+    approx_moderate_p_threshold = 12L,
+    approx_moderate_basis_per_feature_threshold = 120,
+    approx_moderate_screen_ratio = 0.3,
+    approx_moderate_screen_n_multiplier = 0.5,
+    approx_moderate_screen_geom_multiplier = 0.75,
+    approx_moderate_screen_max_basis = 900L,
     approx_refine_ratio = 0.2,
     approx_refine_max_basis = 80L,
     approx_refine_min_basis = 30L,
@@ -731,13 +785,18 @@ fit_hal <- function(X,
     approx_selective_min_n = 350L,
     approx_selective_max_p = 8L,
     approx_selective_min_basis = 650L,
+    approx_selective_moderate_min_n = 700L,
+    approx_selective_moderate_max_p = 12L,
+    approx_selective_moderate_min_basis = 1000L,
     approx_local_refine = TRUE,
     approx_local_refine_lambda_count = 15L,
     approx_cv_fold_compress = TRUE,
     approx_stage1_nfolds = 7L,
     approx_stage2_nfolds = 5L,
     approx_stage1_wide_nfolds = 8L,
-    approx_stage2_wide_nfolds = 7L
+    approx_stage2_wide_nfolds = 7L,
+    approx_stage1_moderate_nfolds = 8L,
+    approx_stage2_moderate_nfolds = 6L
   )
   if (any(!names(defaults) %in% names(fit_control))) {
     fit_control <- c(
@@ -1023,6 +1082,12 @@ fit_hal <- function(X,
       stage1_fit_control$approx_lowdim_screen_n_multiplier <- NULL
       stage1_fit_control$approx_lowdim_screen_geom_multiplier <- NULL
       stage1_fit_control$approx_lowdim_screen_max_basis <- NULL
+      stage1_fit_control$approx_moderate_p_threshold <- NULL
+      stage1_fit_control$approx_moderate_basis_per_feature_threshold <- NULL
+      stage1_fit_control$approx_moderate_screen_ratio <- NULL
+      stage1_fit_control$approx_moderate_screen_n_multiplier <- NULL
+      stage1_fit_control$approx_moderate_screen_geom_multiplier <- NULL
+      stage1_fit_control$approx_moderate_screen_max_basis <- NULL
       stage1_fit_control$approx_refine_ratio <- NULL
       stage1_fit_control$approx_refine_max_basis <- NULL
       stage1_fit_control$approx_refine_min_basis <- NULL
@@ -1038,6 +1103,9 @@ fit_hal <- function(X,
       stage1_fit_control$approx_selective_min_n <- NULL
       stage1_fit_control$approx_selective_max_p <- NULL
       stage1_fit_control$approx_selective_min_basis <- NULL
+      stage1_fit_control$approx_selective_moderate_min_n <- NULL
+      stage1_fit_control$approx_selective_moderate_max_p <- NULL
+      stage1_fit_control$approx_selective_moderate_min_basis <- NULL
       stage1_fit_control$approx_local_refine <- NULL
       stage1_fit_control$approx_local_refine_lambda_count <- NULL
       stage1_fit_control$approx_cv_fold_compress <- NULL
@@ -1045,6 +1113,8 @@ fit_hal <- function(X,
       stage1_fit_control$approx_stage2_nfolds <- NULL
       stage1_fit_control$approx_stage1_wide_nfolds <- NULL
       stage1_fit_control$approx_stage2_wide_nfolds <- NULL
+      stage1_fit_control$approx_stage1_moderate_nfolds <- NULL
+      stage1_fit_control$approx_stage2_moderate_nfolds <- NULL
       stage1_fit_control$foldid <- resolve_approx_stage_foldid(
         fit_control = fit_control,
         stage = "stage1",
@@ -1158,6 +1228,12 @@ fit_hal <- function(X,
   fit_control$approx_lowdim_screen_n_multiplier <- NULL
   fit_control$approx_lowdim_screen_geom_multiplier <- NULL
   fit_control$approx_lowdim_screen_max_basis <- NULL
+  fit_control$approx_moderate_p_threshold <- NULL
+  fit_control$approx_moderate_basis_per_feature_threshold <- NULL
+  fit_control$approx_moderate_screen_ratio <- NULL
+  fit_control$approx_moderate_screen_n_multiplier <- NULL
+  fit_control$approx_moderate_screen_geom_multiplier <- NULL
+  fit_control$approx_moderate_screen_max_basis <- NULL
   fit_control$approx_refine_ratio <- NULL
   fit_control$approx_refine_max_basis <- NULL
   fit_control$approx_refine_min_basis <- NULL
@@ -1173,6 +1249,9 @@ fit_hal <- function(X,
   fit_control$approx_selective_min_n <- NULL
   fit_control$approx_selective_max_p <- NULL
   fit_control$approx_selective_min_basis <- NULL
+  fit_control$approx_selective_moderate_min_n <- NULL
+  fit_control$approx_selective_moderate_max_p <- NULL
+  fit_control$approx_selective_moderate_min_basis <- NULL
   fit_control$approx_local_refine <- NULL
   fit_control$approx_local_refine_lambda_count <- NULL
   fit_control$approx_cv_fold_compress <- NULL
@@ -1180,6 +1259,8 @@ fit_hal <- function(X,
   fit_control$approx_stage2_nfolds <- NULL
   fit_control$approx_stage1_wide_nfolds <- NULL
   fit_control$approx_stage2_wide_nfolds <- NULL
+  fit_control$approx_stage1_moderate_nfolds <- NULL
+  fit_control$approx_stage2_moderate_nfolds <- NULL
 
   if (is.null(hal_lasso)) {
     if (!fit_control$cv_select) {
