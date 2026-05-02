@@ -537,10 +537,10 @@ compute_adaptive_gaussian_screen_target <- function(
   approx_lowdim_screen_max_basis <- as.integer(fit_control$approx_lowdim_screen_max_basis %||% 1200L)
   approx_moderate_p_threshold <- as.integer(fit_control$approx_moderate_p_threshold %||% 12L)
   approx_moderate_basis_per_feature_threshold <- fit_control$approx_moderate_basis_per_feature_threshold %||% 120
-  approx_moderate_screen_ratio <- fit_control$approx_moderate_screen_ratio %||% 0.3
-  approx_moderate_screen_n_multiplier <- fit_control$approx_moderate_screen_n_multiplier %||% 0.5
-  approx_moderate_screen_geom_multiplier <- fit_control$approx_moderate_screen_geom_multiplier %||% 0.75
-  approx_moderate_screen_max_basis <- as.integer(fit_control$approx_moderate_screen_max_basis %||% 900L)
+  approx_moderate_screen_ratio <- fit_control$approx_moderate_screen_ratio %||% 0.4
+  approx_moderate_screen_n_multiplier <- fit_control$approx_moderate_screen_n_multiplier %||% 0.7
+  approx_moderate_screen_geom_multiplier <- fit_control$approx_moderate_screen_geom_multiplier %||% 0.9
+  approx_moderate_screen_max_basis <- as.integer(fit_control$approx_moderate_screen_max_basis %||% 1100L)
 
   basis_per_feature <- penalized_count / max(1L, feature_count)
   structure_aware_mode <- feature_count <= approx_lowdim_p_threshold &&
@@ -701,10 +701,10 @@ fit_hal <- function(X,
                       approx_lowdim_screen_max_basis = 1200L,
                       approx_moderate_p_threshold = 12L,
                       approx_moderate_basis_per_feature_threshold = 120,
-                      approx_moderate_screen_ratio = 0.3,
-                      approx_moderate_screen_n_multiplier = 0.5,
-                      approx_moderate_screen_geom_multiplier = 0.75,
-                      approx_moderate_screen_max_basis = 900L,
+                      approx_moderate_screen_ratio = 0.4,
+                      approx_moderate_screen_n_multiplier = 0.7,
+                      approx_moderate_screen_geom_multiplier = 0.9,
+                      approx_moderate_screen_max_basis = 1100L,
                       approx_refine_ratio = 0.2,
                       approx_refine_max_basis = 80L,
                       approx_refine_min_basis = 30L,
@@ -730,8 +730,8 @@ fit_hal <- function(X,
                       approx_stage2_nfolds = 5L,
                       approx_stage1_wide_nfolds = 8L,
                       approx_stage2_wide_nfolds = 7L,
-                      approx_stage1_moderate_nfolds = 8L,
-                      approx_stage2_moderate_nfolds = 6L
+                      approx_stage1_moderate_nfolds = 10L,
+                      approx_stage2_moderate_nfolds = 8L
                     ),
                     basis_list = NULL,
                     return_lasso = TRUE,
@@ -766,10 +766,10 @@ fit_hal <- function(X,
     approx_lowdim_screen_max_basis = 1200L,
     approx_moderate_p_threshold = 12L,
     approx_moderate_basis_per_feature_threshold = 120,
-    approx_moderate_screen_ratio = 0.3,
-    approx_moderate_screen_n_multiplier = 0.5,
-    approx_moderate_screen_geom_multiplier = 0.75,
-    approx_moderate_screen_max_basis = 900L,
+    approx_moderate_screen_ratio = 0.4,
+    approx_moderate_screen_n_multiplier = 0.7,
+    approx_moderate_screen_geom_multiplier = 0.9,
+    approx_moderate_screen_max_basis = 1100L,
     approx_refine_ratio = 0.2,
     approx_refine_max_basis = 80L,
     approx_refine_min_basis = 30L,
@@ -795,8 +795,8 @@ fit_hal <- function(X,
     approx_stage2_nfolds = 5L,
     approx_stage1_wide_nfolds = 8L,
     approx_stage2_wide_nfolds = 7L,
-    approx_stage1_moderate_nfolds = 8L,
-    approx_stage2_moderate_nfolds = 6L
+    approx_stage1_moderate_nfolds = 10L,
+    approx_stage2_moderate_nfolds = 8L
   )
   if (any(!names(defaults) %in% names(fit_control))) {
     fit_control <- c(
