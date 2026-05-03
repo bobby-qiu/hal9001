@@ -445,6 +445,27 @@ build_local_lambda_refine_sequence <- function(stage1_fit, lambda_star, fit_cont
   unique(lambda_path[seq.int(left, right)])
 }
 
+select_deterministic_stage2_subset <- function(foldid, n_obs, fraction) {
+  fraction <- max(0, min(1, fraction))
+  if (!is.finite(fraction) || fraction >= 1) {
+    return(seq_len(n_obs))
+  }
+
+  if (is.null(foldid)) {
+    target_n <- max(1L, ceiling(n_obs * fraction))
+    return(unique(round(seq(1, n_obs, length.out = target_n))))
+  }
+
+  foldid <- as.integer(foldid)
+  keep <- integer(0)
+  for (fold in sort(unique(foldid))) {
+    fold_idx <- which(foldid == fold)
+    fold_target <- max(1L, ceiling(length(fold_idx) * fraction))
+    keep <- c(keep, fold_idx[unique(round(seq(1, length(fold_idx), length.out = fold_target)))])
+  }
+  sort(unique(keep))
+}
+
 refit_augmented_basis_with_local_lambda_path <- function(fit_control, x_basis,
                                                          penalty_factor, lambda_star,
                                                          family, Y, offset, weights,
@@ -486,6 +507,52 @@ refit_augmented_basis_with_local_lambda_path <- function(fit_control, x_basis,
     ))
   }
 
+  approx_stage2_subsample_cv <- fit_control$approx_stage2_subsample_cv %||% TRUE
+  approx_stage2_subsample_fraction <- fit_control$approx_stage2_subsample_fraction %||% 0.75
+  approx_stage2_subsample_min_n <- as.integer(fit_control$approx_stage2_subsample_min_n %||% 350L)
+  use_stage2_subsample <- isTRUE(approx_stage2_subsample_cv) &&
+    !is.null(adaptive_screen) &&
+    isTRUE(adaptive_screen$structure_aware_mode) &&
+    nrow(x_basis) >= approx_stage2_subsample_min_n &&
+    is.finite(approx_stage2_subsample_fraction) &&
+    approx_stage2_subsample_fraction > 0 &&
+    approx_stage2_subsample_fraction < 1
+
+  if (use_stage2_subsample) {
+    subset_idx <- select_deterministic_stage2_subset(
+      foldid = stage2_foldid,
+      n_obs = nrow(x_basis),
+      fraction = approx_stage2_subsample_fraction
+    )
+    if (length(subset_idx) < nrow(x_basis) && length(unique(stage2_foldid[subset_idx])) >= 3L) {
+      cv_fit_control <- fit_control
+      cv_fit_control$x <- x_basis[subset_idx, , drop = FALSE]
+      cv_fit_control$y <- Y[subset_idx]
+      cv_fit_control$offset <- if (!is.null(offset)) offset[subset_idx] else NULL
+      cv_fit_control$weights <- if (!is.null(weights)) weights[subset_idx] else NULL
+      cv_fit_control$foldid <- stage2_foldid[subset_idx]
+      cv_fit_control$nfolds <- length(unique(cv_fit_control$foldid))
+      cv_fit <- do.call(glmnet::cv.glmnet, cv_fit_control)
+      lambda_type <- extract_selected_lambda_type(fit_control)
+      lambda_star_refined <- if (identical(lambda_type, "lambda.min")) cv_fit$lambda.min else cv_fit$lambda.1se
+
+      full_fit_control <- fit_control
+      full_fit_control$cv_select <- NULL
+      full_fit_control$use_min <- NULL
+      full_fit_control$foldid <- NULL
+      full_fit_control$nfolds <- NULL
+      full_fit_control$lambda <- lambda_star_refined
+      full_fit <- do.call(glmnet::glmnet, full_fit_control)
+      return(list(
+        fit = full_fit,
+        lambda_star = lambda_star_refined,
+        local_lambda_count = length(lambda_sequence),
+        stage2_nfolds = length(unique(cv_fit_control$foldid)),
+        stage2_subsample_n = length(subset_idx)
+      ))
+    }
+  }
+
   fit <- do.call(glmnet::cv.glmnet, fit_control)
   lambda_type <- extract_selected_lambda_type(fit_control)
   lambda_star_refined <- if (identical(lambda_type, "lambda.min")) fit$lambda.min else fit$lambda.1se
@@ -493,7 +560,8 @@ refit_augmented_basis_with_local_lambda_path <- function(fit_control, x_basis,
     fit = fit,
     lambda_star = lambda_star_refined,
     local_lambda_count = length(lambda_sequence),
-    stage2_nfolds = if (!is.null(stage2_foldid)) length(unique(stage2_foldid)) else NA_integer_
+    stage2_nfolds = if (!is.null(stage2_foldid)) length(unique(stage2_foldid)) else NA_integer_,
+    stage2_subsample_n = NA_integer_
   )
 }
 
@@ -683,7 +751,10 @@ fit_hal <- function(X,
                       approx_stage1_nfolds = 7L,
                       approx_stage2_nfolds = 5L,
                       approx_stage1_wide_nfolds = 8L,
-                      approx_stage2_wide_nfolds = 7L
+                      approx_stage2_wide_nfolds = 7L,
+                      approx_stage2_subsample_cv = TRUE,
+                      approx_stage2_subsample_fraction = 0.75,
+                      approx_stage2_subsample_min_n = 350L
                     ),
                     basis_list = NULL,
                     return_lasso = TRUE,
@@ -737,7 +808,10 @@ fit_hal <- function(X,
     approx_stage1_nfolds = 7L,
     approx_stage2_nfolds = 5L,
     approx_stage1_wide_nfolds = 8L,
-    approx_stage2_wide_nfolds = 7L
+    approx_stage2_wide_nfolds = 7L,
+    approx_stage2_subsample_cv = TRUE,
+    approx_stage2_subsample_fraction = 0.75,
+    approx_stage2_subsample_min_n = 350L
   )
   if (any(!names(defaults) %in% names(fit_control))) {
     fit_control <- c(
@@ -1045,6 +1119,9 @@ fit_hal <- function(X,
       stage1_fit_control$approx_stage2_nfolds <- NULL
       stage1_fit_control$approx_stage1_wide_nfolds <- NULL
       stage1_fit_control$approx_stage2_wide_nfolds <- NULL
+      stage1_fit_control$approx_stage2_subsample_cv <- NULL
+      stage1_fit_control$approx_stage2_subsample_fraction <- NULL
+      stage1_fit_control$approx_stage2_subsample_min_n <- NULL
       stage1_fit_control$foldid <- resolve_approx_stage_foldid(
         fit_control = fit_control,
         stage = "stage1",
@@ -1115,7 +1192,8 @@ fit_hal <- function(X,
         screen_target = screen_target,
         local_lambda_count = refined_fit$local_lambda_count,
         stage1_nfolds = if (!is.null(stage1_fit_control$foldid)) length(unique(stage1_fit_control$foldid)) else NA_integer_,
-        stage2_nfolds = refined_fit$stage2_nfolds
+        stage2_nfolds = refined_fit$stage2_nfolds,
+        stage2_subsample_n = refined_fit$stage2_subsample_n %||% NA_integer_
       )
     } else {
       approx_fit_meta <- list(
@@ -1128,7 +1206,8 @@ fit_hal <- function(X,
         screen_target = penalized_count,
         local_lambda_count = 0L,
         stage1_nfolds = NA_integer_,
-        stage2_nfolds = NA_integer_
+        stage2_nfolds = NA_integer_,
+        stage2_subsample_n = NA_integer_
       )
     }
   }
@@ -1180,6 +1259,9 @@ fit_hal <- function(X,
   fit_control$approx_stage2_nfolds <- NULL
   fit_control$approx_stage1_wide_nfolds <- NULL
   fit_control$approx_stage2_wide_nfolds <- NULL
+  fit_control$approx_stage2_subsample_cv <- NULL
+  fit_control$approx_stage2_subsample_fraction <- NULL
+  fit_control$approx_stage2_subsample_min_n <- NULL
 
   if (is.null(hal_lasso)) {
     if (!fit_control$cv_select) {
