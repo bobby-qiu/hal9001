@@ -180,7 +180,7 @@ score_gaussian_screen_candidates <- function(x_basis, y, candidate_penalized_col
   scaled_scores
 }
 
-compute_linear_screen_residual <- function(raw_x, y) {
+fit_raw_linear_gaussian <- function(raw_x, y) {
   if (is.null(raw_x)) {
     return(NULL)
   }
@@ -203,7 +203,52 @@ compute_linear_screen_residual <- function(raw_x, y) {
     return(NULL)
   }
 
+  fit
+}
+
+compute_linear_screen_residual <- function(raw_x, y) {
+  fit <- fit_raw_linear_gaussian(raw_x = raw_x, y = y)
+  if (is.null(fit)) {
+    return(NULL)
+  }
+
   as.numeric(fit$residuals)
+}
+
+estimate_raw_linear_r2 <- function(raw_x, y) {
+  fit <- fit_raw_linear_gaussian(raw_x = raw_x, y = y)
+  if (is.null(fit)) {
+    return(NA_real_)
+  }
+
+  y_centered <- as.numeric(y - mean(y))
+  sst <- sum(y_centered^2)
+  if (!is.finite(sst) || sst <= 0) {
+    return(NA_real_)
+  }
+
+  r2 <- 1 - sum(as.numeric(fit$residuals)^2) / sst
+  if (!is.finite(r2)) NA_real_ else r2
+}
+
+should_fallback_exact_for_approx_risk <- function(fit_control, adaptive_screen, raw_x, y, feature_count) {
+  approx_risk_gate <- fit_control$approx_risk_gate %||% TRUE
+  if (!isTRUE(approx_risk_gate) || is.null(adaptive_screen)) {
+    return(list(fallback = FALSE, linear_r2 = NA_real_))
+  }
+
+  approx_risk_min_n <- as.integer(fit_control$approx_risk_min_n %||% 350L)
+  approx_risk_max_p <- as.integer(fit_control$approx_risk_max_p %||% 8L)
+  if (adaptive_screen$n_obs < approx_risk_min_n || feature_count > approx_risk_max_p) {
+    return(list(fallback = FALSE, linear_r2 = NA_real_))
+  }
+
+  linear_r2 <- estimate_raw_linear_r2(raw_x = raw_x, y = y)
+  threshold <- fit_control$approx_risk_linear_r2_threshold %||% 0.45
+  list(
+    fallback = is.finite(linear_r2) && linear_r2 >= threshold,
+    linear_r2 = linear_r2
+  )
 }
 
 screen_basis_for_gaussian_fit <- function(x_basis, y, max_basis, penalty_factor,
@@ -683,7 +728,11 @@ fit_hal <- function(X,
                       approx_stage1_nfolds = 7L,
                       approx_stage2_nfolds = 5L,
                       approx_stage1_wide_nfolds = 8L,
-                      approx_stage2_wide_nfolds = 7L
+                      approx_stage2_wide_nfolds = 7L,
+                      approx_risk_gate = TRUE,
+                      approx_risk_linear_r2_threshold = 0.45,
+                      approx_risk_min_n = 350L,
+                      approx_risk_max_p = 8L
                     ),
                     basis_list = NULL,
                     return_lasso = TRUE,
@@ -737,7 +786,11 @@ fit_hal <- function(X,
     approx_stage1_nfolds = 7L,
     approx_stage2_nfolds = 5L,
     approx_stage1_wide_nfolds = 8L,
-    approx_stage2_wide_nfolds = 7L
+    approx_stage2_wide_nfolds = 7L,
+    approx_risk_gate = TRUE,
+    approx_risk_linear_r2_threshold = 0.45,
+    approx_risk_min_n = 350L,
+    approx_risk_max_p = 8L
   )
   if (any(!names(defaults) %in% names(fit_control))) {
     fit_control <- c(
@@ -961,7 +1014,9 @@ fit_hal <- function(X,
     refine_basis_count = 0L,
     final_basis_count = ncol(x_basis),
     auto_trigger_basis = NA_integer_,
-    screen_target = ncol(x_basis)
+    screen_target = ncol(x_basis),
+    risk_fallback = FALSE,
+    risk_linear_r2 = NA_real_
   )
   hal_lasso <- NULL
   lambda_star <- NULL
@@ -986,8 +1041,30 @@ fit_hal <- function(X,
       unpenalized_covariates = unpenalized_covariates
     )
     screen_target <- adaptive_screen$target
+    risk_gate <- should_fallback_exact_for_approx_risk(
+      fit_control = fit_control,
+      adaptive_screen = adaptive_screen,
+      raw_x = X,
+      y = Y,
+      feature_count = ncol(X)
+    )
 
-    if (screen_target < penalized_count) {
+    if (isTRUE(risk_gate$fallback)) {
+      approx_fit_meta <- list(
+        used = FALSE,
+        original_basis_count = penalized_count,
+        screened_basis_count = penalized_count,
+        refine_basis_count = 0L,
+        final_basis_count = penalized_count,
+        auto_trigger_basis = adaptive_screen$trigger_basis,
+        screen_target = penalized_count,
+        local_lambda_count = 0L,
+        stage1_nfolds = NA_integer_,
+        stage2_nfolds = NA_integer_,
+        risk_fallback = TRUE,
+        risk_linear_r2 = risk_gate$linear_r2
+      )
+    } else if (screen_target < penalized_count) {
       stage1_keep_cols <- screen_basis_for_gaussian_fit(
         x_basis = x_basis,
         y = Y,
@@ -1045,6 +1122,10 @@ fit_hal <- function(X,
       stage1_fit_control$approx_stage2_nfolds <- NULL
       stage1_fit_control$approx_stage1_wide_nfolds <- NULL
       stage1_fit_control$approx_stage2_wide_nfolds <- NULL
+      stage1_fit_control$approx_risk_gate <- NULL
+      stage1_fit_control$approx_risk_linear_r2_threshold <- NULL
+      stage1_fit_control$approx_risk_min_n <- NULL
+      stage1_fit_control$approx_risk_max_p <- NULL
       stage1_fit_control$foldid <- resolve_approx_stage_foldid(
         fit_control = fit_control,
         stage = "stage1",
@@ -1115,7 +1196,9 @@ fit_hal <- function(X,
         screen_target = screen_target,
         local_lambda_count = refined_fit$local_lambda_count,
         stage1_nfolds = if (!is.null(stage1_fit_control$foldid)) length(unique(stage1_fit_control$foldid)) else NA_integer_,
-        stage2_nfolds = refined_fit$stage2_nfolds
+        stage2_nfolds = refined_fit$stage2_nfolds,
+        risk_fallback = FALSE,
+        risk_linear_r2 = risk_gate$linear_r2
       )
     } else {
       approx_fit_meta <- list(
@@ -1128,7 +1211,9 @@ fit_hal <- function(X,
         screen_target = penalized_count,
         local_lambda_count = 0L,
         stage1_nfolds = NA_integer_,
-        stage2_nfolds = NA_integer_
+        stage2_nfolds = NA_integer_,
+        risk_fallback = FALSE,
+        risk_linear_r2 = risk_gate$linear_r2
       )
     }
   }
@@ -1180,6 +1265,10 @@ fit_hal <- function(X,
   fit_control$approx_stage2_nfolds <- NULL
   fit_control$approx_stage1_wide_nfolds <- NULL
   fit_control$approx_stage2_wide_nfolds <- NULL
+  fit_control$approx_risk_gate <- NULL
+  fit_control$approx_risk_linear_r2_threshold <- NULL
+  fit_control$approx_risk_min_n <- NULL
+  fit_control$approx_risk_max_p <- NULL
 
   if (is.null(hal_lasso)) {
     if (!fit_control$cv_select) {
