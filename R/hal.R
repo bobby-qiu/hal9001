@@ -238,7 +238,7 @@ should_fallback_exact_for_approx_risk <- function(fit_control, adaptive_screen, 
   }
 
   approx_risk_min_n <- as.integer(fit_control$approx_risk_min_n %||% 350L)
-  approx_risk_max_p <- as.integer(fit_control$approx_risk_max_p %||% 8L)
+  approx_risk_max_p <- as.integer(fit_control$approx_risk_max_p %||% 10L)
   if (adaptive_screen$n_obs < approx_risk_min_n || feature_count > approx_risk_max_p) {
     return(list(fallback = FALSE, linear_r2 = NA_real_))
   }
@@ -720,7 +720,7 @@ fit_hal <- function(X,
                       approx_linear_residual_min_basis = 60L,
                       approx_selective_regime = TRUE,
                       approx_selective_min_n = 350L,
-                      approx_selective_max_p = 8L,
+                      approx_selective_max_p = 10L,
                       approx_selective_min_basis = 650L,
                       approx_local_refine = TRUE,
                       approx_local_refine_lambda_count = 15L,
@@ -732,7 +732,7 @@ fit_hal <- function(X,
                       approx_risk_gate = TRUE,
                       approx_risk_linear_r2_threshold = 0.45,
                       approx_risk_min_n = 350L,
-                      approx_risk_max_p = 8L
+                      approx_risk_max_p = 10L
                     ),
                     basis_list = NULL,
                     return_lasso = TRUE,
@@ -778,7 +778,7 @@ fit_hal <- function(X,
     approx_linear_residual_min_basis = 60L,
     approx_selective_regime = TRUE,
     approx_selective_min_n = 350L,
-    approx_selective_max_p = 8L,
+    approx_selective_max_p = 10L,
     approx_selective_min_basis = 650L,
     approx_local_refine = TRUE,
     approx_local_refine_lambda_count = 15L,
@@ -790,7 +790,7 @@ fit_hal <- function(X,
     approx_risk_gate = TRUE,
     approx_risk_linear_r2_threshold = 0.45,
     approx_risk_min_n = 350L,
-    approx_risk_max_p = 8L
+    approx_risk_max_p = 10L
   )
   if (any(!names(defaults) %in% names(fit_control))) {
     fit_control <- c(
