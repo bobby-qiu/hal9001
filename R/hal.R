@@ -565,7 +565,7 @@ compute_adaptive_gaussian_screen_target <- function(
     ceiling(sqrt(n_obs * penalized_count) * approx_screen_geom_multiplier)
   )
 
-  approx_lowdim_p_threshold <- as.integer(fit_control$approx_lowdim_p_threshold %||% 8L)
+  approx_lowdim_p_threshold <- as.integer(fit_control$approx_lowdim_p_threshold %||% 10L)
   approx_lowdim_basis_per_feature_threshold <- fit_control$approx_lowdim_basis_per_feature_threshold %||% 180
   approx_lowdim_screen_ratio <- fit_control$approx_lowdim_screen_ratio %||% 0.45
   approx_lowdim_screen_n_multiplier <- fit_control$approx_lowdim_screen_n_multiplier %||% 0.8
@@ -701,7 +701,7 @@ fit_hal <- function(X,
                       approx_screen_geom_multiplier = 0.6,
                       approx_screen_max_basis = 600L,
                       approx_screen_min_basis = 250L,
-                      approx_lowdim_p_threshold = 8L,
+                      approx_lowdim_p_threshold = 10L,
                       approx_lowdim_basis_per_feature_threshold = 180,
                       approx_lowdim_screen_ratio = 0.45,
                       approx_lowdim_screen_n_multiplier = 0.8,
@@ -759,7 +759,7 @@ fit_hal <- function(X,
     approx_screen_geom_multiplier = 0.6,
     approx_screen_max_basis = 600L,
     approx_screen_min_basis = 250L,
-    approx_lowdim_p_threshold = 8L,
+    approx_lowdim_p_threshold = 10L,
     approx_lowdim_basis_per_feature_threshold = 180,
     approx_lowdim_screen_ratio = 0.45,
     approx_lowdim_screen_n_multiplier = 0.8,
