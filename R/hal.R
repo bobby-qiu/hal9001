@@ -231,6 +231,79 @@ estimate_raw_linear_r2 <- function(raw_x, y) {
   if (!is.finite(r2)) NA_real_ else r2
 }
 
+
+fit_raw_polynomial_gaussian_r2 <- function(raw_x, y, degree) {
+  if (degree < 1L) {
+    return(NA_real_)
+  }
+
+  raw_mat <- as.matrix(raw_x)
+  if (!nrow(raw_mat) || !ncol(raw_mat)) {
+    return(NA_real_)
+  }
+
+  dat <- as.data.frame(raw_mat)
+  names(dat) <- paste0("x", seq_len(ncol(raw_mat)))
+  dat$.y <- as.numeric(y)
+
+  form <- stats::as.formula(sprintf(".y ~ (.)^%d", as.integer(degree)))
+  fit <- tryCatch(stats::lm.fit(
+    x = stats::model.matrix(form, data = dat),
+    y = dat$.y
+  ), error = function(...) NULL)
+  if (is.null(fit) || is.null(fit$residuals)) {
+    return(NA_real_)
+  }
+
+  y_centered <- dat$.y - mean(dat$.y)
+  sst <- sum(y_centered^2)
+  if (!is.finite(sst) || sst <= 0) {
+    return(NA_real_)
+  }
+
+  r2 <- 1 - sum(as.numeric(fit$residuals)^2) / sst
+  if (!is.finite(r2)) NA_real_ else r2
+}
+
+should_fallback_exact_for_cubic_fragility <- function(fit_control, adaptive_screen, raw_x, y, feature_count) {
+  approx_cubic_fragility_gate <- fit_control$approx_cubic_fragility_gate %||% TRUE
+  if (!isTRUE(approx_cubic_fragility_gate) || is.null(adaptive_screen) || is.null(raw_x)) {
+    return(list(fallback = FALSE, poly2_r2 = NA_real_, poly3_r2 = NA_real_, cubic_lift = NA_real_))
+  }
+
+  approx_cubic_fragility_p <- as.integer(fit_control$approx_cubic_fragility_p %||% 10L)
+  approx_cubic_fragility_min_n <- as.integer(fit_control$approx_cubic_fragility_min_n %||% 350L)
+  approx_cubic_fragility_max_n <- as.integer(fit_control$approx_cubic_fragility_max_n %||% 900L)
+  if (feature_count != approx_cubic_fragility_p ||
+      adaptive_screen$n_obs < approx_cubic_fragility_min_n ||
+      adaptive_screen$n_obs > approx_cubic_fragility_max_n) {
+    return(list(fallback = FALSE, poly2_r2 = NA_real_, poly3_r2 = NA_real_, cubic_lift = NA_real_))
+  }
+
+  poly2_r2 <- fit_raw_polynomial_gaussian_r2(raw_x = raw_x, y = y, degree = 2L)
+  poly3_r2 <- fit_raw_polynomial_gaussian_r2(raw_x = raw_x, y = y, degree = 3L)
+  linear_r2 <- estimate_raw_linear_r2(raw_x = raw_x, y = y)
+  cubic_lift <- poly3_r2 - poly2_r2
+  pair_lift <- poly2_r2 - linear_r2
+
+  linear_min <- fit_control$approx_cubic_fragility_linear_min_r2 %||% 0.30
+  pair_min <- fit_control$approx_cubic_fragility_pair_lift_min %||% 0.10
+  cubic_min <- fit_control$approx_cubic_fragility_lift_min %||% 0.22
+  fallback <- is.finite(linear_r2) && is.finite(pair_lift) && is.finite(cubic_lift) &&
+    linear_r2 >= linear_min &&
+    pair_lift >= pair_min &&
+    cubic_lift >= cubic_min
+
+  list(
+    fallback = fallback,
+    poly2_r2 = poly2_r2,
+    poly3_r2 = poly3_r2,
+    cubic_lift = cubic_lift,
+    pair_lift = pair_lift,
+    linear_r2 = linear_r2
+  )
+}
+
 should_fallback_exact_for_approx_risk <- function(fit_control, adaptive_screen, raw_x, y, feature_count) {
   approx_risk_gate <- fit_control$approx_risk_gate %||% TRUE
   if (!isTRUE(approx_risk_gate) || is.null(adaptive_screen)) {
@@ -732,7 +805,14 @@ fit_hal <- function(X,
                       approx_risk_gate = TRUE,
                       approx_risk_linear_r2_threshold = 0.45,
                       approx_risk_min_n = 350L,
-                      approx_risk_max_p = 10L
+                      approx_risk_max_p = 10L,
+                      approx_cubic_fragility_gate = TRUE,
+                      approx_cubic_fragility_p = 10L,
+                      approx_cubic_fragility_min_n = 350L,
+                      approx_cubic_fragility_max_n = 900L,
+                      approx_cubic_fragility_linear_min_r2 = 0.30,
+                      approx_cubic_fragility_pair_lift_min = 0.10,
+                      approx_cubic_fragility_lift_min = 0.22
                     ),
                     basis_list = NULL,
                     return_lasso = TRUE,
@@ -790,7 +870,14 @@ fit_hal <- function(X,
     approx_risk_gate = TRUE,
     approx_risk_linear_r2_threshold = 0.45,
     approx_risk_min_n = 350L,
-    approx_risk_max_p = 10L
+    approx_risk_max_p = 10L,
+    approx_cubic_fragility_gate = TRUE,
+    approx_cubic_fragility_p = 10L,
+    approx_cubic_fragility_min_n = 350L,
+    approx_cubic_fragility_max_n = 900L,
+    approx_cubic_fragility_linear_min_r2 = 0.30,
+    approx_cubic_fragility_pair_lift_min = 0.10,
+    approx_cubic_fragility_lift_min = 0.22
   )
   if (any(!names(defaults) %in% names(fit_control))) {
     fit_control <- c(
@@ -1016,7 +1103,9 @@ fit_hal <- function(X,
     auto_trigger_basis = NA_integer_,
     screen_target = ncol(x_basis),
     risk_fallback = FALSE,
-    risk_linear_r2 = NA_real_
+    risk_linear_r2 = NA_real_,
+    cubic_fragility_fallback = FALSE,
+    cubic_fragility_lift = NA_real_
   )
   hal_lasso <- NULL
   lambda_star <- NULL
@@ -1048,8 +1137,15 @@ fit_hal <- function(X,
       y = Y,
       feature_count = ncol(X)
     )
+    cubic_fragility_gate <- should_fallback_exact_for_cubic_fragility(
+      fit_control = fit_control,
+      adaptive_screen = adaptive_screen,
+      raw_x = X,
+      y = Y,
+      feature_count = ncol(X)
+    )
 
-    if (isTRUE(risk_gate$fallback)) {
+    if (isTRUE(risk_gate$fallback) || isTRUE(cubic_fragility_gate$fallback)) {
       approx_fit_meta <- list(
         used = FALSE,
         original_basis_count = penalized_count,
@@ -1061,8 +1157,10 @@ fit_hal <- function(X,
         local_lambda_count = 0L,
         stage1_nfolds = NA_integer_,
         stage2_nfolds = NA_integer_,
-        risk_fallback = TRUE,
-        risk_linear_r2 = risk_gate$linear_r2
+        risk_fallback = isTRUE(risk_gate$fallback),
+        risk_linear_r2 = risk_gate$linear_r2,
+        cubic_fragility_fallback = isTRUE(cubic_fragility_gate$fallback),
+        cubic_fragility_lift = cubic_fragility_gate$cubic_lift
       )
     } else if (screen_target < penalized_count) {
       stage1_keep_cols <- screen_basis_for_gaussian_fit(
@@ -1126,6 +1224,13 @@ fit_hal <- function(X,
       stage1_fit_control$approx_risk_linear_r2_threshold <- NULL
       stage1_fit_control$approx_risk_min_n <- NULL
       stage1_fit_control$approx_risk_max_p <- NULL
+      stage1_fit_control$approx_cubic_fragility_gate <- NULL
+      stage1_fit_control$approx_cubic_fragility_p <- NULL
+      stage1_fit_control$approx_cubic_fragility_min_n <- NULL
+      stage1_fit_control$approx_cubic_fragility_max_n <- NULL
+      stage1_fit_control$approx_cubic_fragility_linear_min_r2 <- NULL
+      stage1_fit_control$approx_cubic_fragility_pair_lift_min <- NULL
+      stage1_fit_control$approx_cubic_fragility_lift_min <- NULL
       stage1_fit_control$foldid <- resolve_approx_stage_foldid(
         fit_control = fit_control,
         stage = "stage1",
@@ -1198,7 +1303,9 @@ fit_hal <- function(X,
         stage1_nfolds = if (!is.null(stage1_fit_control$foldid)) length(unique(stage1_fit_control$foldid)) else NA_integer_,
         stage2_nfolds = refined_fit$stage2_nfolds,
         risk_fallback = FALSE,
-        risk_linear_r2 = risk_gate$linear_r2
+        risk_linear_r2 = risk_gate$linear_r2,
+        cubic_fragility_fallback = FALSE,
+        cubic_fragility_lift = cubic_fragility_gate$cubic_lift
       )
     } else {
       approx_fit_meta <- list(
@@ -1213,7 +1320,9 @@ fit_hal <- function(X,
         stage1_nfolds = NA_integer_,
         stage2_nfolds = NA_integer_,
         risk_fallback = FALSE,
-        risk_linear_r2 = risk_gate$linear_r2
+        risk_linear_r2 = risk_gate$linear_r2,
+        cubic_fragility_fallback = FALSE,
+        cubic_fragility_lift = cubic_fragility_gate$cubic_lift
       )
     }
   }
@@ -1269,6 +1378,13 @@ fit_hal <- function(X,
   fit_control$approx_risk_linear_r2_threshold <- NULL
   fit_control$approx_risk_min_n <- NULL
   fit_control$approx_risk_max_p <- NULL
+  fit_control$approx_cubic_fragility_gate <- NULL
+  fit_control$approx_cubic_fragility_p <- NULL
+  fit_control$approx_cubic_fragility_min_n <- NULL
+  fit_control$approx_cubic_fragility_max_n <- NULL
+  fit_control$approx_cubic_fragility_linear_min_r2 <- NULL
+  fit_control$approx_cubic_fragility_pair_lift_min <- NULL
+  fit_control$approx_cubic_fragility_lift_min <- NULL
 
   if (is.null(hal_lasso)) {
     if (!fit_control$cv_select) {
