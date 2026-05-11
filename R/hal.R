@@ -268,7 +268,14 @@ fit_raw_polynomial_gaussian_r2 <- function(raw_x, y, degree) {
 should_fallback_exact_for_cubic_fragility <- function(fit_control, adaptive_screen, raw_x, y, feature_count) {
   approx_cubic_fragility_gate <- fit_control$approx_cubic_fragility_gate %||% TRUE
   if (!isTRUE(approx_cubic_fragility_gate) || is.null(adaptive_screen) || is.null(raw_x)) {
-    return(list(fallback = FALSE, poly2_r2 = NA_real_, poly3_r2 = NA_real_, cubic_lift = NA_real_))
+    return(list(
+      fallback = FALSE,
+      poly2_r2 = NA_real_,
+      poly3_r2 = NA_real_,
+      poly4_r2 = NA_real_,
+      cubic_lift = NA_real_,
+      quartic_lift = NA_real_
+    ))
   }
 
   approx_cubic_fragility_p <- as.integer(fit_control$approx_cubic_fragility_p %||% 10L)
@@ -277,28 +284,59 @@ should_fallback_exact_for_cubic_fragility <- function(fit_control, adaptive_scre
   if (feature_count != approx_cubic_fragility_p ||
       adaptive_screen$n_obs < approx_cubic_fragility_min_n ||
       adaptive_screen$n_obs > approx_cubic_fragility_max_n) {
-    return(list(fallback = FALSE, poly2_r2 = NA_real_, poly3_r2 = NA_real_, cubic_lift = NA_real_))
+    return(list(
+      fallback = FALSE,
+      poly2_r2 = NA_real_,
+      poly3_r2 = NA_real_,
+      poly4_r2 = NA_real_,
+      cubic_lift = NA_real_,
+      quartic_lift = NA_real_
+    ))
   }
 
   poly2_r2 <- fit_raw_polynomial_gaussian_r2(raw_x = raw_x, y = y, degree = 2L)
   poly3_r2 <- fit_raw_polynomial_gaussian_r2(raw_x = raw_x, y = y, degree = 3L)
+  poly4_r2 <- fit_raw_polynomial_gaussian_r2(raw_x = raw_x, y = y, degree = 4L)
   linear_r2 <- estimate_raw_linear_r2(raw_x = raw_x, y = y)
   cubic_lift <- poly3_r2 - poly2_r2
+  quartic_lift <- poly4_r2 - poly3_r2
   pair_lift <- poly2_r2 - linear_r2
 
   linear_min <- fit_control$approx_cubic_fragility_linear_min_r2 %||% 0.30
   pair_min <- fit_control$approx_cubic_fragility_pair_lift_min %||% 0.10
   cubic_min <- fit_control$approx_cubic_fragility_lift_min %||% 0.22
-  fallback <- is.finite(linear_r2) && is.finite(pair_lift) && is.finite(cubic_lift) &&
+  cubic_fallback <- is.finite(linear_r2) && is.finite(pair_lift) && is.finite(cubic_lift) &&
     linear_r2 >= linear_min &&
     pair_lift >= pair_min &&
     cubic_lift >= cubic_min
+
+  quartic_gate <- fit_control$approx_quartic_fragility_gate %||% TRUE
+  quartic_min_n <- as.integer(fit_control$approx_quartic_fragility_min_n %||% 350L)
+  quartic_max_n <- as.integer(fit_control$approx_quartic_fragility_max_n %||% 500L)
+  quartic_linear_min <- fit_control$approx_quartic_fragility_linear_min_r2 %||% 0.27
+  quartic_pair_min <- fit_control$approx_quartic_fragility_pair_lift_min %||% 0.15
+  quartic_cubic_min <- fit_control$approx_quartic_fragility_cubic_lift_min %||% 0.30
+  quartic_lift_min <- fit_control$approx_quartic_fragility_lift_min %||% 0.14
+  quartic_fallback <- isTRUE(quartic_gate) &&
+    adaptive_screen$n_obs >= quartic_min_n &&
+    adaptive_screen$n_obs <= quartic_max_n &&
+    is.finite(linear_r2) && is.finite(pair_lift) &&
+    is.finite(cubic_lift) && is.finite(quartic_lift) &&
+    linear_r2 >= quartic_linear_min &&
+    pair_lift >= quartic_pair_min &&
+    cubic_lift >= quartic_cubic_min &&
+    quartic_lift >= quartic_lift_min
+
+  fallback <- cubic_fallback || quartic_fallback
 
   list(
     fallback = fallback,
     poly2_r2 = poly2_r2,
     poly3_r2 = poly3_r2,
+    poly4_r2 = poly4_r2,
     cubic_lift = cubic_lift,
+    quartic_lift = quartic_lift,
+    quartic_fragility_fallback = quartic_fallback,
     pair_lift = pair_lift,
     linear_r2 = linear_r2
   )
@@ -812,7 +850,14 @@ fit_hal <- function(X,
                       approx_cubic_fragility_max_n = 900L,
                       approx_cubic_fragility_linear_min_r2 = 0.30,
                       approx_cubic_fragility_pair_lift_min = 0.10,
-                      approx_cubic_fragility_lift_min = 0.22
+                      approx_cubic_fragility_lift_min = 0.22,
+                      approx_quartic_fragility_gate = TRUE,
+                      approx_quartic_fragility_min_n = 350L,
+                      approx_quartic_fragility_max_n = 500L,
+                      approx_quartic_fragility_linear_min_r2 = 0.27,
+                      approx_quartic_fragility_pair_lift_min = 0.15,
+                      approx_quartic_fragility_cubic_lift_min = 0.30,
+                      approx_quartic_fragility_lift_min = 0.14
                     ),
                     basis_list = NULL,
                     return_lasso = TRUE,
@@ -877,7 +922,14 @@ fit_hal <- function(X,
     approx_cubic_fragility_max_n = 900L,
     approx_cubic_fragility_linear_min_r2 = 0.30,
     approx_cubic_fragility_pair_lift_min = 0.10,
-    approx_cubic_fragility_lift_min = 0.22
+    approx_cubic_fragility_lift_min = 0.22,
+    approx_quartic_fragility_gate = TRUE,
+    approx_quartic_fragility_min_n = 350L,
+    approx_quartic_fragility_max_n = 500L,
+    approx_quartic_fragility_linear_min_r2 = 0.27,
+    approx_quartic_fragility_pair_lift_min = 0.15,
+    approx_quartic_fragility_cubic_lift_min = 0.30,
+    approx_quartic_fragility_lift_min = 0.14
   )
   if (any(!names(defaults) %in% names(fit_control))) {
     fit_control <- c(
@@ -1105,7 +1157,9 @@ fit_hal <- function(X,
     risk_fallback = FALSE,
     risk_linear_r2 = NA_real_,
     cubic_fragility_fallback = FALSE,
-    cubic_fragility_lift = NA_real_
+    cubic_fragility_lift = NA_real_,
+    quartic_fragility_fallback = FALSE,
+    quartic_fragility_lift = NA_real_
   )
   hal_lasso <- NULL
   lambda_star <- NULL
@@ -1160,7 +1214,9 @@ fit_hal <- function(X,
         risk_fallback = isTRUE(risk_gate$fallback),
         risk_linear_r2 = risk_gate$linear_r2,
         cubic_fragility_fallback = isTRUE(cubic_fragility_gate$fallback),
-        cubic_fragility_lift = cubic_fragility_gate$cubic_lift
+        cubic_fragility_lift = cubic_fragility_gate$cubic_lift,
+        quartic_fragility_fallback = isTRUE(cubic_fragility_gate$quartic_fragility_fallback),
+        quartic_fragility_lift = cubic_fragility_gate$quartic_lift
       )
     } else if (screen_target < penalized_count) {
       stage1_keep_cols <- screen_basis_for_gaussian_fit(
@@ -1231,6 +1287,13 @@ fit_hal <- function(X,
       stage1_fit_control$approx_cubic_fragility_linear_min_r2 <- NULL
       stage1_fit_control$approx_cubic_fragility_pair_lift_min <- NULL
       stage1_fit_control$approx_cubic_fragility_lift_min <- NULL
+      stage1_fit_control$approx_quartic_fragility_gate <- NULL
+      stage1_fit_control$approx_quartic_fragility_min_n <- NULL
+      stage1_fit_control$approx_quartic_fragility_max_n <- NULL
+      stage1_fit_control$approx_quartic_fragility_linear_min_r2 <- NULL
+      stage1_fit_control$approx_quartic_fragility_pair_lift_min <- NULL
+      stage1_fit_control$approx_quartic_fragility_cubic_lift_min <- NULL
+      stage1_fit_control$approx_quartic_fragility_lift_min <- NULL
       stage1_fit_control$foldid <- resolve_approx_stage_foldid(
         fit_control = fit_control,
         stage = "stage1",
@@ -1305,7 +1368,9 @@ fit_hal <- function(X,
         risk_fallback = FALSE,
         risk_linear_r2 = risk_gate$linear_r2,
         cubic_fragility_fallback = FALSE,
-        cubic_fragility_lift = cubic_fragility_gate$cubic_lift
+        cubic_fragility_lift = cubic_fragility_gate$cubic_lift,
+        quartic_fragility_fallback = FALSE,
+        quartic_fragility_lift = cubic_fragility_gate$quartic_lift
       )
     } else {
       approx_fit_meta <- list(
@@ -1322,7 +1387,9 @@ fit_hal <- function(X,
         risk_fallback = FALSE,
         risk_linear_r2 = risk_gate$linear_r2,
         cubic_fragility_fallback = FALSE,
-        cubic_fragility_lift = cubic_fragility_gate$cubic_lift
+        cubic_fragility_lift = cubic_fragility_gate$cubic_lift,
+        quartic_fragility_fallback = FALSE,
+        quartic_fragility_lift = cubic_fragility_gate$quartic_lift
       )
     }
   }
@@ -1385,6 +1452,13 @@ fit_hal <- function(X,
   fit_control$approx_cubic_fragility_linear_min_r2 <- NULL
   fit_control$approx_cubic_fragility_pair_lift_min <- NULL
   fit_control$approx_cubic_fragility_lift_min <- NULL
+  fit_control$approx_quartic_fragility_gate <- NULL
+  fit_control$approx_quartic_fragility_min_n <- NULL
+  fit_control$approx_quartic_fragility_max_n <- NULL
+  fit_control$approx_quartic_fragility_linear_min_r2 <- NULL
+  fit_control$approx_quartic_fragility_pair_lift_min <- NULL
+  fit_control$approx_quartic_fragility_cubic_lift_min <- NULL
+  fit_control$approx_quartic_fragility_lift_min <- NULL
 
   if (is.null(hal_lasso)) {
     if (!fit_control$cv_select) {
