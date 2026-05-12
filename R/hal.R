@@ -601,6 +601,25 @@ build_local_lambda_refine_sequence <- function(stage1_fit, lambda_star, fit_cont
   unique(lambda_path[seq.int(left, right)])
 }
 
+should_freeze_stage2_lambda <- function(fit_control, adaptive_screen = NULL) {
+  approx_stage2_lambda_freeze <- fit_control$approx_stage2_lambda_freeze %||% TRUE
+  if (!isTRUE(approx_stage2_lambda_freeze) || is.null(adaptive_screen)) {
+    return(FALSE)
+  }
+
+  feature_count <- as.integer(adaptive_screen$feature_count %||% NA_integer_)
+  min_p <- as.integer(fit_control$approx_stage2_lambda_freeze_min_p %||% 10L)
+  max_p <- as.integer(fit_control$approx_stage2_lambda_freeze_max_p %||% 10L)
+  min_n <- as.integer(fit_control$approx_stage2_lambda_freeze_min_n %||% 350L)
+  min_basis <- as.integer(fit_control$approx_stage2_lambda_freeze_min_basis %||% 650L)
+
+  is.finite(feature_count) &&
+    feature_count >= min_p &&
+    feature_count <= max_p &&
+    adaptive_screen$n_obs >= min_n &&
+    adaptive_screen$penalized_count >= min_basis
+}
+
 refit_augmented_basis_with_local_lambda_path <- function(fit_control, x_basis,
                                                          penalty_factor, lambda_star,
                                                          family, Y, offset, weights,
@@ -611,11 +630,19 @@ refit_augmented_basis_with_local_lambda_path <- function(fit_control, x_basis,
     stage = "stage2",
     adaptive_screen = adaptive_screen
   )
-  lambda_sequence <- build_local_lambda_refine_sequence(
-    stage1_fit = stage1_fit,
-    lambda_star = lambda_star,
-    fit_control = fit_control
+  stage2_lambda_frozen <- should_freeze_stage2_lambda(
+    fit_control = fit_control,
+    adaptive_screen = adaptive_screen
   )
+  lambda_sequence <- if (stage2_lambda_frozen) {
+    lambda_star
+  } else {
+    build_local_lambda_refine_sequence(
+      stage1_fit = stage1_fit,
+      lambda_star = lambda_star,
+      fit_control = fit_control
+    )
+  }
 
   fit_control$x <- x_basis
   fit_control$y <- Y
@@ -638,7 +665,8 @@ refit_augmented_basis_with_local_lambda_path <- function(fit_control, x_basis,
       fit = fit,
       lambda_star = lambda_sequence[[1]],
       local_lambda_count = 1L,
-      stage2_nfolds = 0L
+      stage2_nfolds = 0L,
+      stage2_lambda_frozen = stage2_lambda_frozen
     ))
   }
 
@@ -649,7 +677,8 @@ refit_augmented_basis_with_local_lambda_path <- function(fit_control, x_basis,
     fit = fit,
     lambda_star = lambda_star_refined,
     local_lambda_count = length(lambda_sequence),
-    stage2_nfolds = if (!is.null(stage2_foldid)) length(unique(stage2_foldid)) else NA_integer_
+    stage2_nfolds = if (!is.null(stage2_foldid)) length(unique(stage2_foldid)) else NA_integer_,
+    stage2_lambda_frozen = stage2_lambda_frozen
   )
 }
 
@@ -719,6 +748,7 @@ compute_adaptive_gaussian_screen_target <- function(
     trigger_basis = auto_trigger_basis,
     n_obs = n_obs,
     penalized_count = penalized_count,
+    feature_count = feature_count,
     basis_per_feature = basis_per_feature,
     structure_aware_mode = structure_aware_mode
   )
@@ -857,7 +887,12 @@ fit_hal <- function(X,
                       approx_quartic_fragility_linear_min_r2 = 0.27,
                       approx_quartic_fragility_pair_lift_min = 0.15,
                       approx_quartic_fragility_cubic_lift_min = 0.30,
-                      approx_quartic_fragility_lift_min = 0.14
+                      approx_quartic_fragility_lift_min = 0.14,
+                      approx_stage2_lambda_freeze = TRUE,
+                      approx_stage2_lambda_freeze_min_p = 10L,
+                      approx_stage2_lambda_freeze_max_p = 10L,
+                      approx_stage2_lambda_freeze_min_n = 350L,
+                      approx_stage2_lambda_freeze_min_basis = 650L
                     ),
                     basis_list = NULL,
                     return_lasso = TRUE,
@@ -929,7 +964,12 @@ fit_hal <- function(X,
     approx_quartic_fragility_linear_min_r2 = 0.27,
     approx_quartic_fragility_pair_lift_min = 0.15,
     approx_quartic_fragility_cubic_lift_min = 0.30,
-    approx_quartic_fragility_lift_min = 0.14
+    approx_quartic_fragility_lift_min = 0.14,
+    approx_stage2_lambda_freeze = TRUE,
+    approx_stage2_lambda_freeze_min_p = 10L,
+    approx_stage2_lambda_freeze_max_p = 10L,
+    approx_stage2_lambda_freeze_min_n = 350L,
+    approx_stage2_lambda_freeze_min_basis = 650L
   )
   if (any(!names(defaults) %in% names(fit_control))) {
     fit_control <- c(
@@ -1159,7 +1199,8 @@ fit_hal <- function(X,
     cubic_fragility_fallback = FALSE,
     cubic_fragility_lift = NA_real_,
     quartic_fragility_fallback = FALSE,
-    quartic_fragility_lift = NA_real_
+    quartic_fragility_lift = NA_real_,
+    stage2_lambda_frozen = FALSE
   )
   hal_lasso <- NULL
   lambda_star <- NULL
@@ -1216,7 +1257,8 @@ fit_hal <- function(X,
         cubic_fragility_fallback = isTRUE(cubic_fragility_gate$fallback),
         cubic_fragility_lift = cubic_fragility_gate$cubic_lift,
         quartic_fragility_fallback = isTRUE(cubic_fragility_gate$quartic_fragility_fallback),
-        quartic_fragility_lift = cubic_fragility_gate$quartic_lift
+        quartic_fragility_lift = cubic_fragility_gate$quartic_lift,
+        stage2_lambda_frozen = FALSE
       )
     } else if (screen_target < penalized_count) {
       stage1_keep_cols <- screen_basis_for_gaussian_fit(
@@ -1294,6 +1336,11 @@ fit_hal <- function(X,
       stage1_fit_control$approx_quartic_fragility_pair_lift_min <- NULL
       stage1_fit_control$approx_quartic_fragility_cubic_lift_min <- NULL
       stage1_fit_control$approx_quartic_fragility_lift_min <- NULL
+      stage1_fit_control$approx_stage2_lambda_freeze <- NULL
+      stage1_fit_control$approx_stage2_lambda_freeze_min_p <- NULL
+      stage1_fit_control$approx_stage2_lambda_freeze_max_p <- NULL
+      stage1_fit_control$approx_stage2_lambda_freeze_min_n <- NULL
+      stage1_fit_control$approx_stage2_lambda_freeze_min_basis <- NULL
       stage1_fit_control$foldid <- resolve_approx_stage_foldid(
         fit_control = fit_control,
         stage = "stage1",
@@ -1370,7 +1417,8 @@ fit_hal <- function(X,
         cubic_fragility_fallback = FALSE,
         cubic_fragility_lift = cubic_fragility_gate$cubic_lift,
         quartic_fragility_fallback = FALSE,
-        quartic_fragility_lift = cubic_fragility_gate$quartic_lift
+        quartic_fragility_lift = cubic_fragility_gate$quartic_lift,
+        stage2_lambda_frozen = isTRUE(refined_fit$stage2_lambda_frozen)
       )
     } else {
       approx_fit_meta <- list(
@@ -1389,7 +1437,8 @@ fit_hal <- function(X,
         cubic_fragility_fallback = FALSE,
         cubic_fragility_lift = cubic_fragility_gate$cubic_lift,
         quartic_fragility_fallback = FALSE,
-        quartic_fragility_lift = cubic_fragility_gate$quartic_lift
+        quartic_fragility_lift = cubic_fragility_gate$quartic_lift,
+        stage2_lambda_frozen = FALSE
       )
     }
   }
@@ -1459,6 +1508,11 @@ fit_hal <- function(X,
   fit_control$approx_quartic_fragility_pair_lift_min <- NULL
   fit_control$approx_quartic_fragility_cubic_lift_min <- NULL
   fit_control$approx_quartic_fragility_lift_min <- NULL
+  fit_control$approx_stage2_lambda_freeze <- NULL
+  fit_control$approx_stage2_lambda_freeze_min_p <- NULL
+  fit_control$approx_stage2_lambda_freeze_max_p <- NULL
+  fit_control$approx_stage2_lambda_freeze_min_n <- NULL
+  fit_control$approx_stage2_lambda_freeze_min_basis <- NULL
 
   if (is.null(hal_lasso)) {
     if (!fit_control$cv_select) {
